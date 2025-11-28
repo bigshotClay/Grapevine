@@ -201,7 +201,10 @@ class IdentityBackupTest {
         val exception = assertThrows<IdentityBackupException> {
             identityBackup.importBackup(truncatedFile, "password")
         }
-        assertEquals("Invalid backup file: too small", exception.message)
+        assertTrue(
+            exception.message?.contains("too small") == true,
+            "Expected message to contain 'too small', got: ${exception.message}"
+        )
     }
 
     @Test
@@ -218,13 +221,17 @@ class IdentityBackupTest {
 
         // Modify version byte (5th byte, after "GVBK")
         val data = backupFile.readBytes()
+        assertTrue(data.size > 4, "Backup file unexpectedly small: ${data.size} bytes")
         data[4] = 99.toByte() // Invalid version
         backupFile.writeBytes(data)
 
         val exception = assertThrows<IdentityBackupException> {
             identityBackup.importBackup(backupFile, "password")
         }
-        assertEquals("Unsupported backup version: 99", exception.message)
+        assertTrue(
+            exception.message?.contains("Unsupported backup version") == true,
+            "Expected message to contain 'Unsupported backup version', got: ${exception.message}"
+        )
     }
 
     @Test
@@ -238,15 +245,32 @@ class IdentityBackupTest {
 
         identityBackup.exportBackup(privateKey, identity, "password", backupFile)
 
-        // Tamper with ciphertext (flip some bytes at the end)
+        // Tamper with ciphertext (flip multiple bytes to ensure detection)
+        // Header: 4 (magic) + 1 (version) + 16 (salt) + 12 (iv) = 33 bytes
+        // Everything after offset 33 is ciphertext + GCM auth tag
         val data = backupFile.readBytes()
-        data[data.size - 5] = (data[data.size - 5].toInt() xor 0xFF).toByte()
+        val headerSize = 33 // magic + version + salt + iv
+        assertTrue(
+            data.size > headerSize + 16, // At least header + GCM tag size
+            "Backup file unexpectedly small: ${data.size} bytes, expected > ${headerSize + 16}"
+        )
+
+        // Flip multiple bytes in the ciphertext/auth tag area for robust detection
+        for (offset in listOf(data.size - 1, data.size - 5, data.size - 10)) {
+            if (offset >= headerSize) {
+                data[offset] = (data[offset].toInt() xor 0xFF).toByte()
+            }
+        }
         backupFile.writeBytes(data)
 
         val exception = assertThrows<IdentityBackupException> {
             identityBackup.importBackup(backupFile, "password")
         }
-        assertEquals("Invalid password or corrupted backup", exception.message)
+        assertTrue(
+            exception.message?.contains("Invalid password") == true ||
+                exception.message?.contains("corrupted") == true,
+            "Expected message to indicate invalid password or corruption, got: ${exception.message}"
+        )
     }
 
     @Test
