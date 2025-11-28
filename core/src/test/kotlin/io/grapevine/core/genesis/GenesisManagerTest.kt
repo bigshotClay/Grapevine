@@ -5,6 +5,10 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.security.SecureRandom
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class GenesisManagerTest {
     private lateinit var storage: InMemoryGenesisStorage
@@ -275,5 +279,112 @@ class GenesisManagerTest {
 
         val retrieved = storage.getGenesisInfo()
         assertEquals("Second", retrieved?.displayName)
+    }
+
+    // ==================== Concurrency Tests ====================
+
+    @Test
+    fun `concurrent bootstrap attempts result in exactly one success`() {
+        val threadCount = 10
+        val executor = Executors.newFixedThreadPool(threadCount)
+        val startLatch = CountDownLatch(1)
+        val doneLatch = CountDownLatch(threadCount)
+
+        val successCount = AtomicInteger(0)
+        val alreadyExistsCount = AtomicInteger(0)
+        val errorCount = AtomicInteger(0)
+
+        // Create identities for each thread
+        val identities = (1..threadCount).map {
+            createIdentity(displayName = "Thread-$it")
+        }
+
+        // Submit concurrent bootstrap attempts
+        identities.forEachIndexed { index, identity ->
+            executor.submit {
+                try {
+                    // Wait for all threads to be ready
+                    startLatch.await()
+
+                    val result = genesisManager.bootstrapAsGenesis(identity, "Genesis-$index")
+                    when (result) {
+                        is GenesisResult.Success -> successCount.incrementAndGet()
+                        is GenesisResult.AlreadyExists -> alreadyExistsCount.incrementAndGet()
+                        is GenesisResult.Error -> errorCount.incrementAndGet()
+                    }
+                } finally {
+                    doneLatch.countDown()
+                }
+            }
+        }
+
+        // Start all threads at once
+        startLatch.countDown()
+
+        // Wait for completion
+        assertTrue(doneLatch.await(10, TimeUnit.SECONDS), "Test timed out")
+        executor.shutdown()
+
+        // Verify exactly one success
+        assertEquals(1, successCount.get(), "Expected exactly one successful bootstrap")
+        assertEquals(threadCount - 1, alreadyExistsCount.get(), "Expected other threads to get AlreadyExists")
+        assertEquals(0, errorCount.get(), "Expected no errors")
+
+        // Verify genesis was established
+        assertTrue(genesisManager.hasGenesis())
+        assertNotNull(genesisManager.getGenesisInfo())
+    }
+
+    @Test
+    fun `concurrent bootstrap with race condition returns existing genesis`() {
+        // This test verifies the race condition handling where hasGenesis() returns false
+        // but setGenesis throws because another thread won the race
+
+        val threadCount = 100
+        val executor = Executors.newFixedThreadPool(threadCount)
+        val startLatch = CountDownLatch(1)
+        val doneLatch = CountDownLatch(threadCount)
+
+        val results = mutableListOf<GenesisResult>()
+        val resultsLock = Object()
+
+        // Create identities for each thread
+        val identities = (1..threadCount).map {
+            createIdentity(displayName = "Thread-$it")
+        }
+
+        // Submit concurrent bootstrap attempts
+        identities.forEachIndexed { index, identity ->
+            executor.submit {
+                try {
+                    startLatch.await()
+                    val result = genesisManager.bootstrapAsGenesis(identity, "Genesis-$index")
+                    synchronized(resultsLock) {
+                        results.add(result)
+                    }
+                } finally {
+                    doneLatch.countDown()
+                }
+            }
+        }
+
+        startLatch.countDown()
+        assertTrue(doneLatch.await(30, TimeUnit.SECONDS), "Test timed out")
+        executor.shutdown()
+
+        // Exactly one success, rest should be AlreadyExists
+        val successResults = results.filterIsInstance<GenesisResult.Success>()
+        val alreadyExistsResults = results.filterIsInstance<GenesisResult.AlreadyExists>()
+        val errorResults = results.filterIsInstance<GenesisResult.Error>()
+
+        assertEquals(1, successResults.size, "Expected exactly one success")
+        assertEquals(threadCount - 1, alreadyExistsResults.size, "Expected rest to be AlreadyExists")
+        assertEquals(0, errorResults.size, "Expected no errors: ${errorResults.map { it.message }}")
+
+        // All AlreadyExists results should reference the same genesis
+        val genesisInfo = genesisManager.getGenesisInfo()!!
+        alreadyExistsResults.forEach { result ->
+            assertEquals(genesisInfo, result.existingGenesis)
+        }
     }
 }

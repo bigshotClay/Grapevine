@@ -1,0 +1,8 @@
+-- Migration from version 1 to 2
+-- Adds is_genesis column to identity table for tracking genesis user
+
+-- Add the is_genesis column with default value
+ALTER TABLE identity ADD COLUMN is_genesis INTEGER NOT NULL DEFAULT 0;
+
+-- Create index for efficient genesis lookup
+CREATE INDEX IF NOT EXISTS identity_is_genesis ON identity(is_genesis);

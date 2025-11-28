@@ -50,11 +50,21 @@ class TrustChainManager(
      * The genesis block is a self-signed block that establishes the user as
      * the root of the trust chain. Only one genesis block should exist per network.
      *
+     * This method checks for an existing genesis block before creating a new one.
+     * If a genesis block already exists locally, this method returns null to
+     * prevent creating multiple genesis blocks.
+     *
      * @param displayName Optional display name for the genesis user
-     * @return The created block, or null if creation failed
+     * @return The created block, or null if creation failed or genesis already exists
      */
     fun createGenesisBlock(displayName: String? = null): TrustChainBlock? {
         val community = trustChain ?: return null
+
+        // Prevent creating multiple genesis blocks
+        if (hasGenesisBlock()) {
+            logger.warn("Cannot create genesis block: one already exists")
+            return null
+        }
 
         val transaction = mutableMapOf<String, Any?>(
             "timestamp" to System.currentTimeMillis(),
@@ -75,7 +85,10 @@ class TrustChainManager(
     /**
      * Checks if a genesis block exists in the local chain.
      *
-     * @return true if a genesis block exists, false otherwise
+     * This checks for any block of type [BlockTypes.GENESIS] in the local
+     * TrustChain database, including blocks received from peers.
+     *
+     * @return true if a genesis block exists locally, false otherwise
      */
     fun hasGenesisBlock(): Boolean {
         val blocks = getBlocksByType(BlockTypes.GENESIS)
@@ -83,9 +96,13 @@ class TrustChainManager(
     }
 
     /**
-     * Gets the genesis block if it exists.
+     * Gets the genesis block if it exists in the local chain.
      *
-     * @return The genesis block, or null if none exists
+     * If multiple genesis blocks exist (which would indicate a network problem),
+     * this returns the first one found. In a healthy network, there should only
+     * be one genesis block.
+     *
+     * @return The genesis block, or null if none exists locally
      */
     fun getGenesisBlock(): TrustChainBlock? {
         val blocks = getBlocksByType(BlockTypes.GENESIS)
@@ -272,15 +289,26 @@ class TrustChainManager(
         // Validate genesis blocks
         community.registerTransactionValidator(BlockTypes.GENESIS, object : TransactionValidator {
             override fun validate(block: TrustChainBlock, database: TrustChainStore): ValidationResult {
+                // Agreement blocks are auto-generated responses and validated separately
+                if (block.isAgreement) {
+                    return ValidationResult.Valid
+                }
+
                 // Genesis blocks must have a timestamp
                 val hasTimestamp = block.transaction["timestamp"] != null
-                // Genesis blocks are self-signed (public key equals link public key)
-                val isSelfSigned = block.publicKey.contentEquals(block.linkPublicKey)
-                return if ((hasTimestamp && isSelfSigned) || block.isAgreement) {
-                    ValidationResult.Valid
-                } else {
-                    ValidationResult.Invalid(listOf("Genesis block must be self-signed with timestamp"))
+                if (!hasTimestamp) {
+                    return ValidationResult.Invalid(listOf("Genesis block must have a timestamp"))
                 }
+
+                // Genesis blocks are self-signed (public key equals link public key)
+                // This means the block creator is proposing to themselves, establishing
+                // them as the network founder
+                val isSelfSigned = block.publicKey.contentEquals(block.linkPublicKey)
+                if (!isSelfSigned) {
+                    return ValidationResult.Invalid(listOf("Genesis block must be self-signed"))
+                }
+
+                return ValidationResult.Valid
             }
         })
 

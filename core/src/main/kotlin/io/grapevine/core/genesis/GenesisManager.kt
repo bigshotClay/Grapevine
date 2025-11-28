@@ -79,10 +79,12 @@ class GenesisManager(
      * The genesis user becomes the root of the trust chain and can invite
      * other users to join the network.
      *
+     * This method is safe to call concurrently - if another thread wins the race,
+     * this will return [GenesisResult.AlreadyExists] with the existing genesis info.
+     *
      * @param identity The identity of the user becoming genesis
      * @param displayName Optional display name for the genesis user
      * @return [GenesisResult] indicating success or failure
-     * @throws GenesisException if a genesis user already exists
      */
     fun bootstrapAsGenesis(
         identity: Identity,
@@ -90,16 +92,10 @@ class GenesisManager(
     ): GenesisResult {
         logger.info("Attempting to bootstrap as genesis user")
 
-        // Check if genesis already exists
+        // Check if genesis already exists (early check to avoid unnecessary work)
         if (hasGenesis()) {
             logger.warn("Cannot bootstrap: genesis user already exists")
             return GenesisResult.AlreadyExists(getGenesisInfo()!!)
-        }
-
-        // Validate identity
-        if (identity.publicKey.size != 32) {
-            logger.error("Invalid public key size: ${identity.publicKey.size}")
-            return GenesisResult.Error("Invalid public key size")
         }
 
         // Create genesis info
@@ -109,11 +105,23 @@ class GenesisManager(
             createdAt = System.currentTimeMillis()
         )
 
-        // Store genesis info
+        // Store genesis info - handle race condition where another thread may have
+        // set genesis between our check and this call
         return try {
             storage.setGenesis(genesisInfo)
             logger.info("Successfully bootstrapped as genesis user")
             GenesisResult.Success(genesisInfo)
+        } catch (e: GenesisException) {
+            // Another thread won the race - return the existing genesis info
+            logger.info("Genesis was set by another thread, returning existing genesis")
+            val existingGenesis = storage.getGenesisInfo()
+            if (existingGenesis != null) {
+                GenesisResult.AlreadyExists(existingGenesis)
+            } else {
+                // Unexpected state: exception thrown but no genesis exists
+                logger.error("GenesisException thrown but no genesis found", e)
+                GenesisResult.Error("Unexpected state: ${e.message}")
+            }
         } catch (e: Exception) {
             logger.error("Failed to store genesis info", e)
             GenesisResult.Error("Failed to store genesis info: ${e.message}")

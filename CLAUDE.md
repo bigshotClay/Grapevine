@@ -138,6 +138,18 @@ Before approving a PR, reviewers should verify:
    - Database operations
 3. **Security Tests**: Verify cryptographic operations and signature validation
 
+### Testing Limitations
+
+**TrustChainManager**: Unit testing `TrustChainManager` methods (e.g., `createGenesisBlock`, validators) requires mocking the complex IPv8/TrustChain components (`TrustChainCommunity`, `TrustChainStore`, `Peer`). This is non-trivial because:
+- `TrustChainCommunity` is tightly coupled to the IPv8 network stack
+- Block creation requires a running community with valid peer keys
+- Validators receive real `TrustChainBlock` instances that are difficult to construct in isolation
+
+For now, TrustChainManager functionality should be verified through:
+- Manual integration testing with a running IPv8 instance
+- End-to-end tests when the full application stack is available
+- Future: Consider creating a `TrustChainTestHelper` with mock implementations
+
 ## Branch Strategy
 
 - `main` - Production-ready code only. Protected branch.

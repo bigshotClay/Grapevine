@@ -33,6 +33,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 updateDisplayName:
 UPDATE identity SET display_name = ?, updated_at = ? WHERE id = ?;
 
+-- Clears all genesis flags (used before setting a new genesis)
+clearAllGenesis:
+UPDATE identity SET is_genesis = 0, updated_at = ? WHERE is_genesis = 1;
+
+-- Marks a specific identity as genesis (should be called after clearAllGenesis in a transaction)
 setGenesis:
 UPDATE identity SET is_genesis = 1, updated_at = ? WHERE id = ?;
 
@@ -40,4 +45,4 @@ delete:
 DELETE FROM identity WHERE id = ?;
 
 hasGenesis:
-SELECT COUNT(*) FROM identity WHERE is_genesis = 1;
+SELECT EXISTS(SELECT 1 FROM identity WHERE is_genesis = 1);
