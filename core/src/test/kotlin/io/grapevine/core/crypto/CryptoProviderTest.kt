@@ -118,4 +118,28 @@ class CryptoProviderTest {
         assertEquals(32, bytes2.size)
         assertFalse(bytes1.contentEquals(bytes2))
     }
+
+    @Test
+    fun `extractPublicKeyFromSecretKey returns correct public key`() {
+        val keyPair = crypto.generateSigningKeyPair()
+
+        val extractedPublicKey = crypto.extractPublicKeyFromSecretKey(keyPair.secretKey.asBytes)
+
+        assertArrayEquals(keyPair.publicKey.asBytes, extractedPublicKey)
+    }
+
+    @Test
+    fun `extractPublicKeyFromSecretKey throws for invalid key size`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            crypto.extractPublicKeyFromSecretKey(ByteArray(32)) // Wrong size
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            crypto.extractPublicKeyFromSecretKey(ByteArray(0)) // Empty
+        }
+
+        assertThrows(IllegalArgumentException::class.java) {
+            crypto.extractPublicKeyFromSecretKey(ByteArray(128)) // Too large
+        }
+    }
 }

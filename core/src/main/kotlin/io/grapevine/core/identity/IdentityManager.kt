@@ -2,6 +2,7 @@ package io.grapevine.core.identity
 
 import io.grapevine.core.crypto.CryptoProvider
 import org.slf4j.LoggerFactory
+import java.io.Closeable
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -12,13 +13,17 @@ import kotlin.concurrent.write
  * On first launch, automatically generates a new Ed25519 key pair
  * and stores the private key securely using the OS secure storage.
  *
- * This class is thread-safe.
+ * This class is thread-safe. All public methods that access cached data
+ * return defensive copies to prevent callers from modifying internal state.
+ *
+ * Implements [Closeable] to allow explicit cleanup of sensitive data from memory.
+ * Call [close] when the manager is no longer needed to zero cached private keys.
  */
 class IdentityManager(
     private val secureStorage: SecureStorage,
     private val cryptoProvider: CryptoProvider = CryptoProvider(),
     private val identityBackup: IdentityBackup = IdentityBackup()
-) {
+) : Closeable {
     private val logger = LoggerFactory.getLogger(IdentityManager::class.java)
     private val lock = ReentrantReadWriteLock()
 
@@ -29,17 +34,32 @@ class IdentityManager(
      * Initializes the identity manager.
      * If no identity exists, generates a new key pair.
      *
+     * This method is idempotent - calling it multiple times after initialization
+     * will simply return the cached identity.
+     *
      * @return The current identity
      */
-    fun initialize(): Identity = lock.write {
-        logger.info("Initializing identity manager")
+    fun initialize(): Identity {
+        // Fast path: check if already initialized
+        cachedIdentity?.let { return it }
 
-        return@write if (hasIdentityInternal()) {
-            logger.info("Loading existing identity")
-            loadIdentityInternal()
-        } else {
-            logger.info("No existing identity found, generating new key pair")
-            generateNewIdentityInternal()
+        // Check if identity exists (read lock, minimal I/O)
+        val exists = lock.read { hasIdentityInternal() }
+
+        // Acquire write lock for the actual initialization
+        return lock.write {
+            // Double-check: another thread may have initialized while we waited
+            cachedIdentity?.let { return@write it }
+
+            logger.info("Initializing identity manager")
+
+            if (exists) {
+                logger.info("Loading existing identity")
+                loadIdentityInternal()
+            } else {
+                logger.info("No existing identity found, generating new key pair")
+                generateNewIdentityInternal()
+            }
         }
     }
 
@@ -64,29 +84,48 @@ class IdentityManager(
     }
 
     /**
-     * Gets the private key bytes for signing operations.
+     * Gets a copy of the private key bytes for signing operations.
      * Returns null if no identity exists.
+     *
+     * IMPORTANT: The caller receives a defensive copy of the private key.
+     * The caller is responsible for zeroing this copy when done.
+     *
+     * @return A copy of the private key bytes, or null if no identity exists
      */
-    fun getPrivateKey(): ByteArray? = lock.read {
-        cachedPrivateKey ?: run {
+    fun getPrivateKey(): ByteArray? {
+        // Fast path: check volatile field first (no lock)
+        cachedPrivateKey?.let { return it.copyOf() }
+
+        // Acquire write lock to populate cache if missing
+        return lock.write {
+            // Double-check: another thread may have populated the cache
+            cachedPrivateKey?.let { return@write it.copyOf() }
+
             val key = secureStorage.retrieve(SecureStorage.PRIVATE_KEY_ID)
             if (key != null) {
-                lock.write { cachedPrivateKey = key }
+                // Store a defensive copy in cache
+                cachedPrivateKey = key.copyOf()
             }
-            key
+            // Return a copy, not the cached reference
+            cachedPrivateKey?.copyOf()
         }
     }
 
     /**
-     * Gets the public key bytes.
+     * Gets a copy of the public key bytes.
+     *
+     * @return A copy of the public key bytes
      */
     fun getPublicKey(): ByteArray {
-        return getIdentity().publicKey
+        return getIdentity().publicKey.copyOf()
     }
 
     /**
      * Generates a new identity with a fresh Ed25519 key pair.
      * This will overwrite any existing identity.
+     *
+     * WARNING: This is a destructive operation. Any existing identity
+     * will be permanently replaced.
      *
      * @return The newly created identity
      */
@@ -96,6 +135,9 @@ class IdentityManager(
 
     private fun generateNewIdentityInternal(): Identity {
         logger.info("Generating new Ed25519 key pair")
+
+        // Clear any existing cached data first
+        clearCacheInternal()
 
         val keyPair = cryptoProvider.generateSigningKeyPair()
         val privateKey = keyPair.secretKey.asBytes
@@ -107,13 +149,13 @@ class IdentityManager(
             throw IdentityException("Failed to store private key in secure storage")
         }
 
-        // Create and cache identity
+        // Create and cache identity (store defensive copies)
         val identity = Identity(
-            publicKey = publicKey,
+            publicKey = publicKey.copyOf(),
             createdAt = System.currentTimeMillis()
         )
 
-        cachedPrivateKey = privateKey
+        cachedPrivateKey = privateKey.copyOf()
         cachedIdentity = identity
 
         logger.info("New identity created with short ID: ${identity.shortId}")
@@ -134,21 +176,20 @@ class IdentityManager(
         val privateKey = secureStorage.retrieve(SecureStorage.PRIVATE_KEY_ID)
             ?: throw IdentityException("No identity found in secure storage")
 
-        // Derive public key from private key
-        // Ed25519 private keys (as generated by libsodium) are 64 bytes:
-        // first 32 bytes are the seed, last 32 bytes are the public key
-        val publicKey = if (privateKey.size == ED25519_SECRET_KEY_SIZE) {
-            privateKey.copyOfRange(ED25519_SECRET_KEY_SIZE - Identity.PUBLIC_KEY_SIZE, ED25519_SECRET_KEY_SIZE)
-        } else {
-            throw IdentityException("Invalid private key format: expected $ED25519_SECRET_KEY_SIZE bytes, got ${privateKey.size}")
+        // Delegate public key extraction to CryptoProvider
+        val publicKey = try {
+            cryptoProvider.extractPublicKeyFromSecretKey(privateKey)
+        } catch (e: IllegalArgumentException) {
+            throw IdentityException("Invalid private key format: ${e.message}", e)
         }
 
         val identity = Identity(
-            publicKey = publicKey,
+            publicKey = publicKey.copyOf(),
             createdAt = System.currentTimeMillis() // We don't persist createdAt yet
         )
 
-        cachedPrivateKey = privateKey
+        // Store defensive copies in cache
+        cachedPrivateKey = privateKey.copyOf()
         cachedIdentity = identity
 
         logger.info("Identity loaded with short ID: ${identity.shortId}")
@@ -156,10 +197,16 @@ class IdentityManager(
     }
 
     /**
-     * Clears the cached identity and private key.
+     * Clears the cached identity and private key from memory.
      * Does not delete from secure storage.
+     *
+     * The cached private key is securely zeroed before being released.
      */
     fun clearCache() = lock.write {
+        clearCacheInternal()
+    }
+
+    private fun clearCacheInternal() {
         cachedPrivateKey?.fill(0) // Securely clear the private key from memory
         cachedPrivateKey = null
         cachedIdentity = null
@@ -169,18 +216,15 @@ class IdentityManager(
      * Deletes the identity from secure storage.
      * This is a destructive operation and cannot be undone.
      *
+     * The cache is cleared first to ensure sensitive data is removed from memory
+     * regardless of whether the storage deletion succeeds.
+     *
      * @return true if deletion was successful
      */
     fun deleteIdentity(): Boolean = lock.write {
         logger.warn("Deleting identity from secure storage")
         clearCacheInternal()
         secureStorage.delete(SecureStorage.PRIVATE_KEY_ID)
-    }
-
-    private fun clearCacheInternal() {
-        cachedPrivateKey?.fill(0)
-        cachedPrivateKey = null
-        cachedIdentity = null
     }
 
     /**
@@ -191,13 +235,19 @@ class IdentityManager(
      * @throws IdentityException if no identity exists
      * @throws IdentityBackupException if backup fails
      */
-    fun exportBackup(password: String, outputFile: java.io.File) = lock.read {
+    fun exportBackup(password: String, outputFile: java.io.File) {
+        // Get copies outside of any lock to avoid holding locks during I/O
         val privateKey = getPrivateKey()
             ?: throw IdentityException("No identity to export")
         val identity = getIdentity()
 
-        logger.info("Exporting identity backup to ${outputFile.absolutePath}")
-        identityBackup.exportBackup(privateKey, identity, password, outputFile)
+        try {
+            logger.info("Exporting identity backup to ${outputFile.absolutePath}")
+            identityBackup.exportBackup(privateKey, identity, password, outputFile)
+        } finally {
+            // Zero our copy of the private key
+            privateKey.fill(0)
+        }
     }
 
     /**
@@ -209,24 +259,30 @@ class IdentityManager(
      * @return The restored identity
      * @throws IdentityBackupException if import fails
      */
-    fun importBackup(backupFile: java.io.File, password: String): Identity = lock.write {
+    fun importBackup(backupFile: java.io.File, password: String): Identity {
         logger.info("Importing identity backup from ${backupFile.absolutePath}")
 
+        // Perform I/O outside of write lock
         val backupData = identityBackup.importBackup(backupFile, password)
 
-        // Store the private key
-        val stored = secureStorage.store(SecureStorage.PRIVATE_KEY_ID, backupData.privateKey)
-        if (!stored) {
-            throw IdentityException("Failed to store imported private key in secure storage")
+        return lock.write {
+            // Clear existing cache first
+            clearCacheInternal()
+
+            // Store the private key
+            val stored = secureStorage.store(SecureStorage.PRIVATE_KEY_ID, backupData.privateKey)
+            if (!stored) {
+                throw IdentityException("Failed to store imported private key in secure storage")
+            }
+
+            // Create and cache the identity (store defensive copies)
+            val identity = backupData.toIdentity()
+            cachedPrivateKey = backupData.privateKey.copyOf()
+            cachedIdentity = identity
+
+            logger.info("Identity imported successfully with short ID: ${identity.shortId}")
+            identity
         }
-
-        // Create and cache the identity
-        val identity = backupData.toIdentity()
-        cachedPrivateKey = backupData.privateKey
-        cachedIdentity = identity
-
-        logger.info("Identity imported successfully with short ID: ${identity.shortId}")
-        identity
     }
 
     /**
@@ -239,9 +295,15 @@ class IdentityManager(
         return identityBackup.isValidBackupFile(backupFile)
     }
 
-    companion object {
-        /** Ed25519 secret key size (64 bytes: 32 bytes seed + 32 bytes public key) */
-        private const val ED25519_SECRET_KEY_SIZE = 64
+    /**
+     * Closes this manager and clears all sensitive data from memory.
+     *
+     * After calling this method, the manager can still be used - it will
+     * reload from secure storage as needed. This is primarily useful for
+     * explicitly clearing sensitive data when the manager is no longer needed.
+     */
+    override fun close() {
+        clearCache()
     }
 }
 

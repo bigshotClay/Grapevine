@@ -87,6 +87,24 @@ class CryptoProvider {
     }
 
     /**
+     * Extracts the public key from an Ed25519 secret key.
+     *
+     * Ed25519 secret keys in libsodium are 64 bytes: 32 bytes seed + 32 bytes public key.
+     * This method extracts the public key portion from the secret key.
+     *
+     * @param secretKey The 64-byte Ed25519 secret key
+     * @return The 32-byte public key
+     * @throws IllegalArgumentException if the secret key is not 64 bytes
+     */
+    fun extractPublicKeyFromSecretKey(secretKey: ByteArray): ByteArray {
+        require(secretKey.size == ED25519_SECRET_KEY_BYTES) {
+            "Invalid secret key size: expected $ED25519_SECRET_KEY_BYTES bytes, got ${secretKey.size}"
+        }
+        // Ed25519 secret key format: [32-byte seed][32-byte public key]
+        return secretKey.copyOfRange(ED25519_SECRET_KEY_BYTES - ED25519_PUBLIC_KEY_BYTES, ED25519_SECRET_KEY_BYTES)
+    }
+
+    /**
      * Converts Ed25519 public key to X25519 public key for key exchange.
      *
      * @param ed25519PublicKey The Ed25519 public key

@@ -8,6 +8,12 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class IdentityManagerTest {
     private lateinit var secureStorage: InMemorySecureStorage
@@ -226,6 +232,242 @@ class IdentityManagerTest {
         val verified = cryptoProvider.verify(message, signature, pubKey)
 
         assertTrue(verified)
+    }
+
+    @Test
+    fun `getPrivateKey returns defensive copy`() {
+        identityManager.initialize()
+
+        val key1 = identityManager.getPrivateKey()!!
+        val key2 = identityManager.getPrivateKey()!!
+
+        // Keys should be equal in content
+        assertArrayEquals(key1, key2)
+
+        // But different references
+        assertNotSame(key1, key2)
+
+        // Modifying one should not affect the other
+        key1.fill(0)
+        assertFalse(key1.contentEquals(key2))
+
+        // And should not affect what getPrivateKey returns
+        val key3 = identityManager.getPrivateKey()!!
+        assertArrayEquals(key2, key3)
+    }
+
+    @Test
+    fun `getPublicKey returns defensive copy`() {
+        identityManager.initialize()
+
+        val key1 = identityManager.getPublicKey()
+        val key2 = identityManager.getPublicKey()
+
+        // Keys should be equal in content
+        assertArrayEquals(key1, key2)
+
+        // But different references
+        assertNotSame(key1, key2)
+
+        // Modifying one should not affect the other
+        key1.fill(0)
+        assertFalse(key1.contentEquals(key2))
+    }
+
+    @Test
+    fun `close clears cached data`() {
+        identityManager.initialize()
+        assertNotNull(identityManager.getPrivateKey())
+
+        identityManager.close()
+
+        // After close, should reload from storage
+        assertTrue(identityManager.hasIdentity())
+        assertNotNull(identityManager.getPrivateKey())
+    }
+
+    // Concurrency tests
+
+    @Test
+    fun `concurrent initialization returns same identity`() {
+        val threadCount = 10
+        val barrier = CyclicBarrier(threadCount)
+        val latch = CountDownLatch(threadCount)
+        val identities = mutableListOf<Identity>()
+        val errors = AtomicReference<Throwable?>()
+        val lock = Object()
+
+        val executor = Executors.newFixedThreadPool(threadCount)
+
+        repeat(threadCount) {
+            executor.submit {
+                try {
+                    barrier.await() // Ensure all threads start at the same time
+                    val identity = identityManager.initialize()
+                    synchronized(lock) {
+                        identities.add(identity)
+                    }
+                } catch (e: Throwable) {
+                    errors.compareAndSet(null, e)
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+
+        latch.await(10, TimeUnit.SECONDS)
+        executor.shutdown()
+
+        assertNull(errors.get(), "Unexpected error: ${errors.get()}")
+        assertEquals(threadCount, identities.size)
+
+        // All identities should have the same public key
+        val firstPubKey = identities[0].publicKey
+        identities.forEach { identity ->
+            assertArrayEquals(firstPubKey, identity.publicKey)
+        }
+    }
+
+    @Test
+    fun `concurrent getPrivateKey calls are thread-safe`() {
+        identityManager.initialize()
+
+        val threadCount = 20
+        val iterations = 100
+        val barrier = CyclicBarrier(threadCount)
+        val latch = CountDownLatch(threadCount)
+        val errors = AtomicReference<Throwable?>()
+        val successCount = AtomicInteger(0)
+
+        val executor = Executors.newFixedThreadPool(threadCount)
+
+        repeat(threadCount) {
+            executor.submit {
+                try {
+                    barrier.await()
+                    repeat(iterations) {
+                        val key = identityManager.getPrivateKey()
+                        assertNotNull(key)
+                        assertEquals(64, key!!.size)
+                    }
+                    successCount.incrementAndGet()
+                } catch (e: Throwable) {
+                    errors.compareAndSet(null, e)
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+
+        latch.await(30, TimeUnit.SECONDS)
+        executor.shutdown()
+
+        assertNull(errors.get(), "Unexpected error: ${errors.get()}")
+        assertEquals(threadCount, successCount.get())
+    }
+
+    @Test
+    fun `concurrent getIdentity calls are thread-safe`() {
+        val threadCount = 20
+        val iterations = 100
+        val barrier = CyclicBarrier(threadCount)
+        val latch = CountDownLatch(threadCount)
+        val errors = AtomicReference<Throwable?>()
+        val identities = mutableListOf<Identity>()
+        val lock = Object()
+
+        val executor = Executors.newFixedThreadPool(threadCount)
+
+        repeat(threadCount) {
+            executor.submit {
+                try {
+                    barrier.await()
+                    repeat(iterations) {
+                        val identity = identityManager.getIdentity()
+                        synchronized(lock) {
+                            identities.add(identity)
+                        }
+                    }
+                } catch (e: Throwable) {
+                    errors.compareAndSet(null, e)
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+
+        latch.await(30, TimeUnit.SECONDS)
+        executor.shutdown()
+
+        assertNull(errors.get(), "Unexpected error: ${errors.get()}")
+        assertEquals(threadCount * iterations, identities.size)
+
+        // All identities should be the same
+        val firstPubKey = identities[0].publicKey
+        identities.forEach { identity ->
+            assertArrayEquals(firstPubKey, identity.publicKey)
+        }
+    }
+
+    @Test
+    fun `concurrent reads and clearCache are thread-safe`() {
+        identityManager.initialize()
+        val expectedPublicKey = identityManager.getPublicKey()
+
+        val threadCount = 10
+        val iterations = 50
+        val barrier = CyclicBarrier(threadCount + 1) // +1 for the clear thread
+        val latch = CountDownLatch(threadCount + 1)
+        val errors = AtomicReference<Throwable?>()
+
+        val executor = Executors.newFixedThreadPool(threadCount + 1)
+
+        // Readers
+        repeat(threadCount) {
+            executor.submit {
+                try {
+                    barrier.await()
+                    repeat(iterations) {
+                        val identity = identityManager.getIdentity()
+                        assertArrayEquals(expectedPublicKey, identity.publicKey)
+                    }
+                } catch (e: Throwable) {
+                    errors.compareAndSet(null, e)
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+
+        // Cache clearer
+        executor.submit {
+            try {
+                barrier.await()
+                repeat(iterations) {
+                    identityManager.clearCache()
+                    Thread.sleep(1) // Give readers a chance
+                }
+            } catch (e: Throwable) {
+                errors.compareAndSet(null, e)
+            } finally {
+                latch.countDown()
+            }
+        }
+
+        latch.await(30, TimeUnit.SECONDS)
+        executor.shutdown()
+
+        assertNull(errors.get(), "Unexpected error: ${errors.get()}")
+    }
+
+    @Test
+    fun `loadIdentity throws when storage returns malformed key`() {
+        // Store a malformed key (wrong size)
+        secureStorage.store(SecureStorage.PRIVATE_KEY_ID, ByteArray(32)) // Wrong size, should be 64
+
+        assertThrows<IdentityException> {
+            identityManager.loadIdentity()
+        }
     }
 }
 
