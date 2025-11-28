@@ -3,6 +3,8 @@ package io.grapevine.core.crypto
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 
 class CryptoProviderTest {
     private lateinit var crypto: CryptoProvider
@@ -125,7 +127,9 @@ class CryptoProviderTest {
 
         val extractedPublicKey = crypto.getPublicKeyFromSecretKey(keyPair.secretKey.asBytes)
 
+        assertEquals(CryptoProvider.ED25519_PUBLIC_KEY_BYTES, extractedPublicKey.size)
         assertArrayEquals(keyPair.publicKey.asBytes, extractedPublicKey)
+        assertNotSame(keyPair.publicKey.asBytes, extractedPublicKey)
     }
 
     @Test
@@ -137,7 +141,24 @@ class CryptoProviderTest {
         val derivedPublicKey = crypto.getPublicKeyFromSecretKey(seed)
 
         // The derived public key should match the original keypair's public key
+        assertEquals(CryptoProvider.ED25519_PUBLIC_KEY_BYTES, derivedPublicKey.size)
         assertArrayEquals(keyPair.publicKey.asBytes, derivedPublicKey)
+    }
+
+    @ParameterizedTest(name = "valid size {0} bytes")
+    @ValueSource(ints = [32, 64])
+    fun `getPublicKeyFromSecretKey accepts valid sizes`(size: Int) {
+        val keyPair = crypto.generateSigningKeyPair()
+        val input = when (size) {
+            CryptoProvider.ED25519_SECRET_KEY_BYTES -> keyPair.secretKey.asBytes
+            CryptoProvider.ED25519_SEED_BYTES -> keyPair.secretKey.asBytes.copyOfRange(0, CryptoProvider.ED25519_SEED_BYTES)
+            else -> throw IllegalArgumentException("Unexpected size: $size")
+        }
+
+        val publicKey = crypto.getPublicKeyFromSecretKey(input)
+
+        assertEquals(CryptoProvider.ED25519_PUBLIC_KEY_BYTES, publicKey.size)
+        assertArrayEquals(keyPair.publicKey.asBytes, publicKey)
     }
 
     @Test
@@ -147,6 +168,9 @@ class CryptoProviderTest {
 
         val extractedPublicKey = crypto.getPublicKeyFromSecretKey(secretKeyBytes)
 
+        // Verify identity - must be a different array instance
+        assertNotSame(keyPair.publicKey.asBytes, extractedPublicKey)
+
         // Modify the extracted key and verify original is not affected
         val originalBytes = keyPair.publicKey.asBytes.copyOf()
         extractedPublicKey[0] = (extractedPublicKey[0].toInt() xor 0xFF).toByte()
@@ -155,27 +179,18 @@ class CryptoProviderTest {
         assertArrayEquals(originalBytes, keyPair.publicKey.asBytes)
     }
 
-    @Test
-    fun `getPublicKeyFromSecretKey throws for invalid key size`() {
-        val exception16 = assertThrows(IllegalArgumentException::class.java) {
-            crypto.getPublicKeyFromSecretKey(ByteArray(16)) // Too small
+    @ParameterizedTest(name = "invalid size {0} bytes")
+    @ValueSource(ints = [0, 16, 31, 33, 63, 128])
+    fun `getPublicKeyFromSecretKey throws for invalid key sizes`(size: Int) {
+        assertThrows(IllegalArgumentException::class.java) {
+            crypto.getPublicKeyFromSecretKey(ByteArray(size))
         }
-        assertTrue(exception16.message!!.contains("16"))
-
-        val exception0 = assertThrows(IllegalArgumentException::class.java) {
-            crypto.getPublicKeyFromSecretKey(ByteArray(0)) // Empty
-        }
-        assertTrue(exception0.message!!.contains("0"))
-
-        val exception128 = assertThrows(IllegalArgumentException::class.java) {
-            crypto.getPublicKeyFromSecretKey(ByteArray(128)) // Too large
-        }
-        assertTrue(exception128.message!!.contains("128"))
     }
 
     @Test
     fun `getPublicKeyFromSecretKey produces consistent results for same seed`() {
-        val seed = crypto.randomBytes(CryptoProvider.ED25519_SEED_BYTES)
+        // Use a deterministic fixed seed for reproducibility
+        val seed = ByteArray(CryptoProvider.ED25519_SEED_BYTES) { index -> index.toByte() }
 
         val publicKey1 = crypto.getPublicKeyFromSecretKey(seed)
         val publicKey2 = crypto.getPublicKeyFromSecretKey(seed)
@@ -188,8 +203,10 @@ class CryptoProviderTest {
     fun `deprecated extractPublicKeyFromSecretKey delegates to new method`() {
         val keyPair = crypto.generateSigningKeyPair()
 
-        val extractedPublicKey = crypto.extractPublicKeyFromSecretKey(keyPair.secretKey.asBytes)
+        val deprecatedResult = crypto.extractPublicKeyFromSecretKey(keyPair.secretKey.asBytes)
+        val newResult = crypto.getPublicKeyFromSecretKey(keyPair.secretKey.asBytes)
 
-        assertArrayEquals(keyPair.publicKey.asBytes, extractedPublicKey)
+        assertArrayEquals(keyPair.publicKey.asBytes, deprecatedResult)
+        assertArrayEquals(newResult, deprecatedResult)
     }
 }

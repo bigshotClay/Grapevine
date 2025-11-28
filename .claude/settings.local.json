@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(gh auth:*)",
+      "Bash(gh repo create:*)",
+      "Bash(python -c:*)",
+      "Bash(pip install:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gradle wrapper:*)",
+      "Bash(curl:*)",
+      "Bash(./gradlew.bat build:*)",
+      "Bash(./gradlew.bat :core:test --no-daemon)",
+      "Bash(./gradlew.bat:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:jitpack.io)",
+      "Bash(git checkout:*)",
+      "Bash(git restore:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nEpic 1: Project Foundation & Infrastructure\n\nImplements the foundational infrastructure for Grapevine:\n\n- Setup Gradle project with Kotlin DSL (#11)\n  - Multi-module project structure (core, network, storage, sync, ui, app)\n  - Kotlin 2.1.0 targeting JVM 17+\n  - Version catalog for dependency management\n\n- Configure cross-platform builds (#12)\n  - Compose Desktop configuration for Windows, macOS, Linux\n  - Native packaging targets (MSI, DMG, DEB)\n\n- Configure Libsodium for cryptographic operations (#16)\n  - Ed25519 signature operations\n  - X25519 key exchange\n  - SHA-256 hashing for content addressing\n\n- Setup SQLite database with SQLDelight (#15)\n  - Type-safe database operations\n  - Tables: identities, invite_blocks, timeline_blocks,\n    follow_relationships, content_metadata, content_chunks,\n    user_preferences\n\n- Integrate kotlin-ipv8 library (#13)\n  - GrapevineOverlay for peer-to-peer messaging\n  - NetworkManager for IPv8 stack management\n  - Peer discovery and monitoring\n\n- Integrate TrustChain for blockchain functionality (#14)\n  - TrustChainManager for block operations\n  - Block types: invite, post, follow, unfollow, profile_update\n  - Block validation and signing\n\n- Setup unit testing framework with coverage targets (#17)\n  - JUnit 5 with Kover for code coverage\n  - 80% coverage target on core modules\n\nCloses #11, #12, #13, #14, #15, #16, #17\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git push:*)",
+      "Bash(gh pr create:*)",
+      "Bash(git commit:*)",
+      "Bash(gh pr view:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(cat:*)",
+      "Bash(git reset:*)",
+      "Bash(gh pr list:*)",
+      "WebSearch",
+      "Bash(git stash:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

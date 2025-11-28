@@ -250,6 +250,103 @@ class SignatureServiceTest {
     }
 
     @Test
+    fun `SignedData makes defensive copies on construction`() {
+        val data = "Test".toByteArray()
+        val signature = ByteArray(64) { it.toByte() }
+        val publicKey = ByteArray(32) { it.toByte() }
+
+        val signedData = SignedData(data, signature, publicKey)
+
+        // Modify original arrays
+        data[0] = 0xFF.toByte()
+        signature[0] = 0xFF.toByte()
+        publicKey[0] = 0xFF.toByte()
+
+        // SignedData should retain original values
+        assertEquals('T'.code.toByte(), signedData.data[0])
+        assertEquals(0.toByte(), signedData.signature[0])
+        assertEquals(0.toByte(), signedData.signerPublicKey[0])
+    }
+
+    @Test
+    fun `SignedData returns copies from accessors`() {
+        val signedData = SignedData(
+            "Test".toByteArray(),
+            ByteArray(64) { it.toByte() },
+            ByteArray(32) { it.toByte() }
+        )
+
+        // Get arrays and modify them
+        val data = signedData.data
+        val signature = signedData.signature
+        val publicKey = signedData.signerPublicKey
+
+        data[0] = 0xFF.toByte()
+        signature[0] = 0xFF.toByte()
+        publicKey[0] = 0xFF.toByte()
+
+        // Getting the arrays again should return original values
+        assertEquals('T'.code.toByte(), signedData.data[0])
+        assertEquals(0.toByte(), signedData.signature[0])
+        assertEquals(0.toByte(), signedData.signerPublicKey[0])
+    }
+
+    @Test
+    fun `SignedData equals is unaffected by external array modification`() {
+        val data = "Test".toByteArray()
+        val signature = ByteArray(64)
+        val publicKey = ByteArray(32)
+
+        val signedData1 = SignedData(data, signature, publicKey)
+        val signedData2 = SignedData(data.copyOf(), signature.copyOf(), publicKey.copyOf())
+
+        // Modify original arrays
+        data[0] = 0xFF.toByte()
+        signature[0] = 0xFF.toByte()
+        publicKey[0] = 0xFF.toByte()
+
+        // Equality should still hold
+        assertEquals(signedData1, signedData2)
+        assertEquals(signedData1.hashCode(), signedData2.hashCode())
+    }
+
+    @Test
+    fun `SignedData toString does not leak sensitive data`() {
+        val signedData = SignedData(
+            "Secret data".toByteArray(),
+            ByteArray(64),
+            ByteArray(32)
+        )
+
+        val str = signedData.toString()
+
+        // Should not contain actual data content
+        assertFalse(str.contains("Secret"))
+        // Should contain size information
+        assertTrue(str.contains("dataSize="))
+        assertTrue(str.contains("signatureSize="))
+        assertTrue(str.contains("publicKeySize="))
+    }
+
+    @Test
+    fun `signMessage throws for invalid private key size`() {
+        // Create a mock storage that returns invalid key size
+        val invalidStorage = object : SecureStorage {
+            override fun store(keyId: String, data: ByteArray): Boolean = true
+            override fun retrieve(keyId: String): ByteArray? = ByteArray(16) // Invalid size
+            override fun delete(keyId: String): Boolean = true
+            override fun exists(keyId: String): Boolean = true
+        }
+
+        val invalidIdentityManager = IdentityManager(invalidStorage, cryptoProvider)
+        val serviceWithInvalidKey = SignatureService(invalidIdentityManager, cryptoProvider)
+
+        assertThrows<SignatureException> {
+            serviceWithInvalidKey.signMessage("Test".toByteArray())
+        }
+    }
+
+    @Test
     fun `can verify messages signed with raw CryptoProvider`() {
         identityManager.initialize()
         val privateKey = identityManager.getPrivateKey()!!

@@ -1,40 +1,70 @@
 package io.grapevine.core.identity
 
 import org.slf4j.LoggerFactory
-import java.io.File
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.concurrent.locks.ReentrantReadWriteLock
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 /**
- * JVM implementation of SecureStorage using Java KeyStore.
+ * JVM implementation of SecureStorage using a PKCS12 KeyStore.
  *
- * On Windows, this uses DPAPI through the Windows-ROOT keystore when available.
- * On macOS, this uses the Keychain through the KeychainStore when available.
- * On Linux, falls back to a password-protected PKCS12 keystore.
+ * This implementation stores encryption keys in a PKCS12 keystore file and
+ * encrypted data in separate files within the storage directory. Each stored
+ * entry uses AES-256-GCM encryption with a unique per-entry key.
  *
- * The keystore is stored in the user's app data directory.
+ * ## Storage Structure
+ * - `grapevine.keystore` - PKCS12 keystore containing AES encryption keys
+ * - `entries/<key-hash>.enc` - Encrypted data files (IV + ciphertext)
+ *
+ * ## Security Considerations
+ * **WARNING**: The keystore password is derived from machine-specific system properties
+ * (OS name, username, home directory). These values are NOT secrets - an attacker with
+ * filesystem access and knowledge of the machine/user info can reproduce the password.
+ *
+ * For production deployments requiring stronger protection, consider:
+ * - Integrating with OS-native credential managers (Windows Credential Manager,
+ *   macOS Keychain, Linux Secret Service)
+ * - Requiring a user-supplied passphrase
+ * - Using platform-specific KeyStore types (Windows-MY, KeychainStore)
+ *
+ * ## Thread Safety
+ * This class is thread-safe. All keystore and file operations are synchronized.
+ *
+ * ## File Permissions
+ * On POSIX systems, restrictive permissions (owner read/write only) are set on
+ * the storage directory and all created files.
  */
 class JvmSecureStorage(
-    private val storageDir: String = getDefaultStorageDir()
+    storageDir: String = getDefaultStorageDir()
 ) : SecureStorage {
     private val logger = LoggerFactory.getLogger(JvmSecureStorage::class.java)
-    private val keystoreFile = File(storageDir, "grapevine.keystore")
+    private val storagePath: Path = Path.of(storageDir)
+    private val keystorePath: Path = storagePath.resolve("grapevine.keystore")
+    private val entriesDir: Path = storagePath.resolve("entries")
     private val keystorePassword = getOrCreateKeystorePassword()
     private val keystore: KeyStore
+    private val lock = ReentrantReadWriteLock()
+    private val secureRandom = SecureRandom()
 
     init {
-        // Ensure storage directory exists
-        File(storageDir).mkdirs()
+        createDirectoryWithPermissions(storagePath)
+        createDirectoryWithPermissions(entriesDir)
 
-        // Initialize keystore
         keystore = KeyStore.getInstance("PKCS12")
-        if (keystoreFile.exists()) {
-            keystoreFile.inputStream().use { stream ->
+        if (Files.exists(keystorePath)) {
+            Files.newInputStream(keystorePath).use { stream ->
                 keystore.load(stream, keystorePassword)
             }
         } else {
@@ -44,93 +74,98 @@ class JvmSecureStorage(
     }
 
     override fun store(key: String, value: ByteArray): Boolean {
-        return try {
-            // Generate or retrieve encryption key for this entry
-            val encryptionKey = getOrCreateEncryptionKey(key)
+        return lock.write {
+            try {
+                val keyAlias = sanitizeAlias(key)
+                val encryptionKey = getOrCreateEncryptionKey(keyAlias)
 
-            // Encrypt the value
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, encryptionKey)
-            val iv = cipher.iv
-            val encryptedData = cipher.doFinal(value)
+                val cipher = Cipher.getInstance(AES_GCM_ALGORITHM)
+                val iv = ByteArray(GCM_IV_LENGTH)
+                secureRandom.nextBytes(iv)
+                cipher.init(Cipher.ENCRYPT_MODE, encryptionKey, GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+                val encryptedData = cipher.doFinal(value)
 
-            // Store IV + encrypted data as a secret key entry
-            // Using "AES" algorithm identifier for compatibility
-            val combined = iv + encryptedData
-            val entry = KeyStore.SecretKeyEntry(
-                SecretKeySpec(combined, "AES")
-            )
-            keystore.setEntry(
-                "${key}_data",
-                entry,
-                KeyStore.PasswordProtection(keystorePassword)
-            )
+                val combined = iv + encryptedData
+                val entryFile = entriesDir.resolve("$keyAlias.enc")
+                writeFileAtomically(entryFile, combined)
 
-            saveKeystore()
-            logger.debug("Stored secret for key: $key")
-            true
-        } catch (e: Exception) {
-            logger.error("Failed to store secret for key: $key", e)
-            false
+                logger.debug("Stored secret for key: {}", key)
+                true
+            } catch (e: Exception) {
+                logger.error("Failed to store secret for key: {}", key, e)
+                false
+            }
         }
     }
 
     override fun retrieve(key: String): ByteArray? {
-        return try {
-            // Get encryption key
-            val encryptionKey = getEncryptionKey(key) ?: return null
+        return lock.read {
+            try {
+                val keyAlias = sanitizeAlias(key)
+                val encryptionKey = getEncryptionKey(keyAlias) ?: return@read null
 
-            // Get encrypted data
-            val entry = keystore.getEntry(
-                "${key}_data",
-                KeyStore.PasswordProtection(keystorePassword)
-            ) as? KeyStore.SecretKeyEntry ?: return null
+                val entryFile = entriesDir.resolve("$keyAlias.enc")
+                if (!Files.exists(entryFile)) return@read null
 
-            val combined = entry.secretKey.encoded
-            if (combined.size < 12) return null
+                val combined = Files.readAllBytes(entryFile)
+                if (combined.size < GCM_IV_LENGTH) {
+                    logger.warn("Encrypted data for key {} is too short", key)
+                    return@read null
+                }
 
-            // Extract IV and encrypted data
-            val iv = combined.copyOfRange(0, 12)
-            val encryptedData = combined.copyOfRange(12, combined.size)
+                val iv = combined.copyOfRange(0, GCM_IV_LENGTH)
+                val encryptedData = combined.copyOfRange(GCM_IV_LENGTH, combined.size)
 
-            // Decrypt
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, encryptionKey, GCMParameterSpec(128, iv))
-            cipher.doFinal(encryptedData)
-        } catch (e: Exception) {
-            logger.error("Failed to retrieve secret for key: $key", e)
-            null
+                val cipher = Cipher.getInstance(AES_GCM_ALGORITHM)
+                cipher.init(Cipher.DECRYPT_MODE, encryptionKey, GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+                cipher.doFinal(encryptedData)
+            } catch (e: Exception) {
+                logger.error("Failed to retrieve secret for key: {}", key, e)
+                null
+            }
         }
     }
 
     override fun delete(key: String): Boolean {
-        return try {
-            var deleted = false
-            if (keystore.containsAlias("${key}_key")) {
-                keystore.deleteEntry("${key}_key")
-                deleted = true
+        return lock.write {
+            try {
+                val keyAlias = sanitizeAlias(key)
+                var deleted = false
+
+                val keyStoreAlias = "${keyAlias}_key"
+                if (keystore.containsAlias(keyStoreAlias)) {
+                    keystore.deleteEntry(keyStoreAlias)
+                    saveKeystore()
+                    deleted = true
+                }
+
+                val entryFile = entriesDir.resolve("$keyAlias.enc")
+                if (Files.exists(entryFile)) {
+                    Files.delete(entryFile)
+                    deleted = true
+                }
+
+                if (deleted) {
+                    logger.debug("Deleted secret for key: {}", key)
+                }
+                deleted
+            } catch (e: Exception) {
+                logger.error("Failed to delete secret for key: {}", key, e)
+                false
             }
-            if (keystore.containsAlias("${key}_data")) {
-                keystore.deleteEntry("${key}_data")
-                deleted = true
-            }
-            if (deleted) {
-                saveKeystore()
-                logger.debug("Deleted secret for key: $key")
-            }
-            deleted
-        } catch (e: Exception) {
-            logger.error("Failed to delete secret for key: $key", e)
-            false
         }
     }
 
     override fun exists(key: String): Boolean {
-        return keystore.containsAlias("${key}_data")
+        return lock.read {
+            val keyAlias = sanitizeAlias(key)
+            val entryFile = entriesDir.resolve("$keyAlias.enc")
+            Files.exists(entryFile)
+        }
     }
 
-    private fun getOrCreateEncryptionKey(key: String): SecretKey {
-        val alias = "${key}_key"
+    private fun getOrCreateEncryptionKey(keyAlias: String): SecretKey {
+        val alias = "${keyAlias}_key"
         return if (keystore.containsAlias(alias)) {
             val entry = keystore.getEntry(
                 alias,
@@ -139,12 +174,11 @@ class JvmSecureStorage(
             entry.secretKey
         } else {
             val keyGen = KeyGenerator.getInstance("AES")
-            // Try 256-bit key, fall back to 128-bit if not available
             try {
-                keyGen.init(256)
+                keyGen.init(AES_KEY_SIZE_BITS, secureRandom)
             } catch (e: Exception) {
                 logger.warn("256-bit AES not available, falling back to 128-bit")
-                keyGen.init(128)
+                keyGen.init(AES_FALLBACK_KEY_SIZE_BITS, secureRandom)
             }
             val newKey = keyGen.generateKey()
             keystore.setEntry(
@@ -157,8 +191,8 @@ class JvmSecureStorage(
         }
     }
 
-    private fun getEncryptionKey(key: String): SecretKey? {
-        val alias = "${key}_key"
+    private fun getEncryptionKey(keyAlias: String): SecretKey? {
+        val alias = "${keyAlias}_key"
         return if (keystore.containsAlias(alias)) {
             val entry = keystore.getEntry(
                 alias,
@@ -171,27 +205,92 @@ class JvmSecureStorage(
     }
 
     private fun saveKeystore() {
-        keystoreFile.outputStream().use { stream ->
-            keystore.store(stream, keystorePassword)
+        val tempFile = storagePath.resolve("grapevine.keystore.tmp")
+        try {
+            Files.newOutputStream(
+                tempFile,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.TRUNCATE_EXISTING
+            ).use { stream ->
+                keystore.store(stream, keystorePassword)
+            }
+            setRestrictivePermissions(tempFile)
+            Files.move(tempFile, keystorePath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (e: Exception) {
+            try {
+                Files.deleteIfExists(tempFile)
+            } catch (deleteEx: Exception) {
+                logger.warn("Failed to delete temp keystore file", deleteEx)
+            }
+            throw e
         }
     }
 
+    private fun writeFileAtomically(targetPath: Path, data: ByteArray) {
+        val tempFile = targetPath.resolveSibling("${targetPath.fileName}.tmp")
+        try {
+            Files.write(
+                tempFile,
+                data,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.TRUNCATE_EXISTING
+            )
+            setRestrictivePermissions(tempFile)
+            Files.move(tempFile, targetPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (e: Exception) {
+            try {
+                Files.deleteIfExists(tempFile)
+            } catch (deleteEx: Exception) {
+                logger.warn("Failed to delete temp file", deleteEx)
+            }
+            throw e
+        }
+    }
+
+    private fun createDirectoryWithPermissions(path: Path) {
+        if (!Files.exists(path)) {
+            Files.createDirectories(path)
+            setRestrictivePermissions(path)
+        }
+    }
+
+    private fun setRestrictivePermissions(path: Path) {
+        try {
+            if (isPosixFileSystem(path)) {
+                val permissions = PosixFilePermissions.fromString("rw-------")
+                Files.setPosixFilePermissions(path, permissions)
+            }
+        } catch (e: Exception) {
+            logger.debug("Could not set restrictive permissions on {}: {}", path, e.message)
+        }
+    }
+
+    private fun isPosixFileSystem(path: Path): Boolean {
+        return try {
+            path.fileSystem.supportedFileAttributeViews().contains("posix")
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun sanitizeAlias(key: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(key.toByteArray(Charsets.UTF_8))
+        return hash.toHexString()
+    }
+
     private fun getOrCreateKeystorePassword(): CharArray {
-        // Use a machine-specific password derived from system properties
-        // This provides some protection while not requiring user input
-        // Note: For production use, consider integrating with OS-native secure storage
-        // (Windows Credential Manager, macOS Keychain, Linux Secret Service)
         val machineId = deriveMachineIdentifier()
         return machineId.toCharArray()
     }
 
     private fun deriveMachineIdentifier(): String {
-        // Create a semi-unique identifier for this machine using SHA-256
         val osName = System.getProperty("os.name", "unknown")
         val userName = System.getProperty("user.name", "unknown")
         val userHome = System.getProperty("user.home", "unknown")
 
-        // Use SHA-256 for cryptographically secure derivation
         val input = "$osName:$userName:$userHome:grapevine-keystore-v1"
         val digest = MessageDigest.getInstance("SHA-256")
         val hash = digest.digest(input.toByteArray(Charsets.UTF_8))
@@ -203,6 +302,12 @@ class JvmSecureStorage(
     }
 
     companion object {
+        private const val AES_GCM_ALGORITHM = "AES/GCM/NoPadding"
+        private const val GCM_IV_LENGTH = 12
+        private const val GCM_TAG_LENGTH_BITS = 128
+        private const val AES_KEY_SIZE_BITS = 256
+        private const val AES_FALLBACK_KEY_SIZE_BITS = 128
+
         private fun getDefaultStorageDir(): String {
             val userHome = System.getProperty("user.home")
             return when {
