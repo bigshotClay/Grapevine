@@ -17,7 +17,7 @@ import kotlin.concurrent.write
 class IdentityManager(
     private val secureStorage: SecureStorage,
     private val cryptoProvider: CryptoProvider = CryptoProvider(),
-    private val identityBackup: IdentityBackup = IdentityBackup(cryptoProvider)
+    private val identityBackup: IdentityBackup = IdentityBackup()
 ) {
     private val logger = LoggerFactory.getLogger(IdentityManager::class.java)
     private val lock = ReentrantReadWriteLock()

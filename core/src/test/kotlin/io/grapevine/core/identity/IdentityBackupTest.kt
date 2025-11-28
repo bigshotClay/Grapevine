@@ -1,7 +1,6 @@
 package io.grapevine.core.identity
 
 import io.grapevine.core.crypto.CryptoProvider
-import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -20,7 +19,7 @@ class IdentityBackupTest {
     @BeforeEach
     fun setUp() {
         cryptoProvider = CryptoProvider()
-        identityBackup = IdentityBackup(cryptoProvider)
+        identityBackup = IdentityBackup()
     }
 
     @Test
@@ -172,5 +171,141 @@ class IdentityBackupTest {
 
         assertTrue(backupFile.exists())
         assertTrue(backupFile.parentFile.exists())
+    }
+
+    // ==================== Edge Case Tests ====================
+
+    @Test
+    fun `isValidBackupFile returns false for truncated file - only magic bytes`() {
+        val truncatedFile = tempDir.resolve("truncated.gvbk").toFile()
+        truncatedFile.writeBytes("GVBK".toByteArray()) // Only magic, no version/salt/iv
+
+        assertFalse(identityBackup.isValidBackupFile(truncatedFile))
+    }
+
+    @Test
+    fun `isValidBackupFile returns false for file with wrong magic bytes`() {
+        val wrongMagicFile = tempDir.resolve("wrong-magic.gvbk").toFile()
+        // Write wrong magic + enough bytes to pass size check
+        wrongMagicFile.writeBytes("FAKE".toByteArray() + ByteArray(50))
+
+        assertFalse(identityBackup.isValidBackupFile(wrongMagicFile))
+    }
+
+    @Test
+    fun `import fails for truncated file`() {
+        val truncatedFile = tempDir.resolve("truncated.gvbk").toFile()
+        // Write valid magic + version but truncated content
+        truncatedFile.writeBytes("GVBK".toByteArray() + byteArrayOf(1) + ByteArray(10))
+
+        val exception = assertThrows<IdentityBackupException> {
+            identityBackup.importBackup(truncatedFile, "password")
+        }
+        assertEquals("Invalid backup file: too small", exception.message)
+    }
+
+    @Test
+    fun `import fails for wrong version`() {
+        val keyPair = cryptoProvider.generateSigningKeyPair()
+        val privateKey = keyPair.secretKey.asBytes
+        val publicKey = keyPair.publicKey.asBytes
+
+        val identity = Identity(publicKey = publicKey)
+        val backupFile = tempDir.resolve("test-backup.gvbk").toFile()
+
+        // Create valid backup first
+        identityBackup.exportBackup(privateKey, identity, "password", backupFile)
+
+        // Modify version byte (5th byte, after "GVBK")
+        val data = backupFile.readBytes()
+        data[4] = 99.toByte() // Invalid version
+        backupFile.writeBytes(data)
+
+        val exception = assertThrows<IdentityBackupException> {
+            identityBackup.importBackup(backupFile, "password")
+        }
+        assertEquals("Unsupported backup version: 99", exception.message)
+    }
+
+    @Test
+    fun `import fails for tampered ciphertext`() {
+        val keyPair = cryptoProvider.generateSigningKeyPair()
+        val privateKey = keyPair.secretKey.asBytes
+        val publicKey = keyPair.publicKey.asBytes
+
+        val identity = Identity(publicKey = publicKey)
+        val backupFile = tempDir.resolve("test-backup.gvbk").toFile()
+
+        identityBackup.exportBackup(privateKey, identity, "password", backupFile)
+
+        // Tamper with ciphertext (flip some bytes at the end)
+        val data = backupFile.readBytes()
+        data[data.size - 5] = (data[data.size - 5].toInt() xor 0xFF).toByte()
+        backupFile.writeBytes(data)
+
+        val exception = assertThrows<IdentityBackupException> {
+            identityBackup.importBackup(backupFile, "password")
+        }
+        assertEquals("Invalid password or corrupted backup", exception.message)
+    }
+
+    @Test
+    fun `isValidBackupFile returns false for empty file`() {
+        val emptyFile = tempDir.resolve("empty.gvbk").toFile()
+        emptyFile.createNewFile()
+
+        assertFalse(identityBackup.isValidBackupFile(emptyFile))
+    }
+
+    @Test
+    fun `export fails with invalid private key size`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val invalidPrivateKey = ByteArray(32) { it.toByte() } // Should be 64 bytes
+
+        val identity = Identity(publicKey = publicKey)
+        val backupFile = tempDir.resolve("test-backup.gvbk").toFile()
+
+        assertThrows<IllegalArgumentException> {
+            identityBackup.exportBackup(invalidPrivateKey, identity, "password", backupFile)
+        }
+    }
+
+    @Test
+    fun `backup round trip preserves equality`() {
+        val keyPair = cryptoProvider.generateSigningKeyPair()
+        val privateKey = keyPair.secretKey.asBytes
+        val publicKey = keyPair.publicKey.asBytes
+        val validAvatarHash = "b".repeat(64)
+
+        val identity = Identity(
+            publicKey = publicKey,
+            displayName = "Bob",
+            avatarHash = validAvatarHash,
+            bio = "Test bio with unicode: 你好世界 🎉",
+            createdAt = 1234567890L
+        )
+
+        val backupFile = tempDir.resolve("roundtrip.gvbk").toFile()
+        val password = "securePassword123!"
+
+        // Export
+        identityBackup.exportBackup(privateKey, identity, password, backupFile)
+
+        // Import
+        val imported = identityBackup.importBackup(backupFile, password)
+
+        // Verify
+        assertArrayEquals(privateKey, imported.privateKey)
+        assertEquals(identity, imported.toIdentity())
+    }
+
+    @Test
+    fun `import with empty password fails`() {
+        val backupFile = tempDir.resolve("test.gvbk").toFile()
+        backupFile.writeText("dummy")
+
+        assertThrows<IllegalArgumentException> {
+            identityBackup.importBackup(backupFile, "")
+        }
     }
 }

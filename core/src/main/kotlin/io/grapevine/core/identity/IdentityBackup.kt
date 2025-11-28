@@ -1,12 +1,14 @@
 package io.grapevine.core.identity
 
-import io.grapevine.core.crypto.CryptoProvider
 import io.grapevine.core.serialization.ByteArraySerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
@@ -19,17 +21,32 @@ import javax.crypto.spec.SecretKeySpec
  *
  * Backups are encrypted using AES-256-GCM with a key derived from
  * a user-provided password using PBKDF2.
+ *
+ * ## Backup File Format
+ * The backup file has the following structure:
+ * - Magic bytes: 4 bytes ("GVBK" - Grapevine Backup)
+ * - Version: 1 byte (currently version 1)
+ * - Salt: 16 bytes (random, for PBKDF2 key derivation)
+ * - IV: 12 bytes (random, for AES-GCM - standard GCM nonce size)
+ * - Ciphertext: Variable length (encrypted JSON + 16-byte GCM auth tag)
+ *
+ * ## Security Notes
+ * - PBKDF2 with 100,000 iterations is used for key derivation
+ * - AES-256-GCM provides authenticated encryption with 128-bit auth tag
+ * - Sensitive data (keys, plaintext) is zeroed after use
  */
-class IdentityBackup(
-    private val cryptoProvider: CryptoProvider = CryptoProvider()
-) {
+class IdentityBackup {
+    private val secureRandom = SecureRandom()
     private val logger = LoggerFactory.getLogger(IdentityBackup::class.java)
     private val json = Json { prettyPrint = true }
 
     /**
      * Exports an identity to an encrypted backup file.
      *
-     * @param privateKey The private key to backup (64 bytes)
+     * The file is written atomically (to a temp file first, then moved) to prevent
+     * partial writes on crash.
+     *
+     * @param privateKey The private key to backup (64 bytes for Ed25519 seed + public key)
      * @param identity The identity metadata
      * @param password User-provided password for encryption
      * @param outputFile The file to write the backup to
@@ -42,9 +59,12 @@ class IdentityBackup(
         outputFile: File
     ) {
         require(password.isNotEmpty()) { "Password cannot be empty" }
-        require(privateKey.size == 64) { "Private key must be 64 bytes" }
+        require(privateKey.size == PRIVATE_KEY_SIZE) { "Private key must be $PRIVATE_KEY_SIZE bytes" }
 
         logger.info("Creating identity backup")
+
+        var plaintext: ByteArray? = null
+        var passwordChars: CharArray? = null
 
         try {
             // Create backup data
@@ -60,36 +80,54 @@ class IdentityBackup(
 
             // Serialize to JSON
             val jsonData = json.encodeToString(backupData)
-            val plaintext = jsonData.toByteArray(Charsets.UTF_8)
+            plaintext = jsonData.toByteArray(Charsets.UTF_8)
 
             // Generate salt and IV
             val salt = ByteArray(SALT_SIZE)
             val iv = ByteArray(IV_SIZE)
-            SecureRandom().nextBytes(salt)
-            SecureRandom().nextBytes(iv)
+            secureRandom.nextBytes(salt)
+            secureRandom.nextBytes(iv)
 
             // Derive key from password
-            val key = deriveKey(password, salt)
+            passwordChars = password.toCharArray()
+            val key = deriveKey(passwordChars, salt)
 
             // Encrypt
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_SIZE * 8, iv))
             val ciphertext = cipher.doFinal(plaintext)
 
-            // Write backup file: magic + version + salt + iv + ciphertext
+            // Write backup file atomically: temp file -> rename
             outputFile.parentFile?.mkdirs()
-            outputFile.outputStream().use { out ->
-                out.write(BACKUP_MAGIC)
-                out.write(byteArrayOf(BACKUP_VERSION.toByte()))
-                out.write(salt)
-                out.write(iv)
-                out.write(ciphertext)
+            val tempFile = File(outputFile.parentFile, "${outputFile.name}.tmp")
+            try {
+                tempFile.outputStream().use { out ->
+                    out.write(BACKUP_MAGIC)
+                    out.write(byteArrayOf(BACKUP_VERSION.toByte()))
+                    out.write(salt)
+                    out.write(iv)
+                    out.write(ciphertext)
+                }
+                // Atomic move to final destination
+                Files.move(
+                    tempFile.toPath(),
+                    outputFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (e: Exception) {
+                tempFile.delete() // Clean up temp file on failure
+                throw e
             }
 
-            logger.info("Identity backup created: ${outputFile.absolutePath}")
+            logger.info("Identity backup created successfully")
         } catch (e: Exception) {
             logger.error("Failed to create identity backup", e)
-            throw IdentityBackupException("Failed to create backup: ${e.message}", e)
+            throw IdentityBackupException("Failed to create backup", e)
+        } finally {
+            // Zero sensitive data
+            plaintext?.fill(0)
+            passwordChars?.fill('\u0000')
         }
     }
 
@@ -105,12 +143,16 @@ class IdentityBackup(
         require(password.isNotEmpty()) { "Password cannot be empty" }
         require(backupFile.exists()) { "Backup file does not exist" }
 
-        logger.info("Importing identity backup: ${backupFile.absolutePath}")
+        logger.info("Importing identity backup")
+
+        var plaintext: ByteArray? = null
+        var passwordChars: CharArray? = null
 
         try {
             val data = backupFile.readBytes()
 
-            // Verify magic bytes
+            // Minimum size check: magic + version + salt + iv + at least GCM auth tag
+            // (GCM tag is included in ciphertext, so ciphertext must be at least TAG_SIZE)
             if (data.size < BACKUP_MAGIC.size + 1 + SALT_SIZE + IV_SIZE + TAG_SIZE) {
                 throw IdentityBackupException("Invalid backup file: too small")
             }
@@ -135,12 +177,13 @@ class IdentityBackup(
             val ciphertext = data.copyOfRange(offset, data.size)
 
             // Derive key from password
-            val key = deriveKey(password, salt)
+            passwordChars = password.toCharArray()
+            val key = deriveKey(passwordChars, salt)
 
             // Decrypt
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_SIZE * 8, iv))
-            val plaintext = try {
+            plaintext = try {
                 cipher.doFinal(ciphertext)
             } catch (e: Exception) {
                 throw IdentityBackupException("Invalid password or corrupted backup")
@@ -150,11 +193,11 @@ class IdentityBackup(
             val jsonData = plaintext.toString(Charsets.UTF_8)
             val backupData = json.decodeFromString<BackupData>(jsonData)
 
-            // Validate
-            if (backupData.privateKey.size != 64) {
+            // Validate key sizes
+            if (backupData.privateKey.size != PRIVATE_KEY_SIZE) {
                 throw IdentityBackupException("Invalid backup: bad private key size")
             }
-            if (backupData.publicKey.size != 32) {
+            if (backupData.publicKey.size != PUBLIC_KEY_SIZE) {
                 throw IdentityBackupException("Invalid backup: bad public key size")
             }
 
@@ -164,12 +207,17 @@ class IdentityBackup(
             throw e
         } catch (e: Exception) {
             logger.error("Failed to import identity backup", e)
-            throw IdentityBackupException("Failed to import backup: ${e.message}", e)
+            throw IdentityBackupException("Failed to import backup", e)
+        } finally {
+            // Zero sensitive data
+            plaintext?.fill(0)
+            passwordChars?.fill('\u0000')
         }
     }
 
     /**
      * Validates a backup file without fully decrypting it.
+     * Checks for valid magic bytes indicating a Grapevine backup.
      *
      * @param backupFile The backup file to validate
      * @return true if the file appears to be a valid Grapevine backup
@@ -179,40 +227,66 @@ class IdentityBackup(
         if (backupFile.length() < BACKUP_MAGIC.size + 1 + SALT_SIZE + IV_SIZE + TAG_SIZE) return false
 
         return try {
-            val magic = ByteArray(BACKUP_MAGIC.size)
-            backupFile.inputStream().use { it.read(magic) }
-            magic.contentEquals(BACKUP_MAGIC)
+            backupFile.inputStream().use { stream ->
+                // Read exactly BACKUP_MAGIC.size bytes, checking we got them all
+                val magic = stream.readNBytes(BACKUP_MAGIC.size)
+                magic.size == BACKUP_MAGIC.size && magic.contentEquals(BACKUP_MAGIC)
+            }
         } catch (e: Exception) {
             false
         }
     }
 
-    private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
+    /**
+     * Derives an AES-256 key from a password using PBKDF2-HMAC-SHA256.
+     * Clears the PBEKeySpec and encoded key bytes after use.
+     */
+    private fun deriveKey(password: CharArray, salt: ByteArray): SecretKeySpec {
         val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val spec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, 256)
-        val secret = factory.generateSecret(spec)
-        return SecretKeySpec(secret.encoded, "AES")
+        val spec = PBEKeySpec(password, salt, PBKDF2_ITERATIONS, 256)
+        try {
+            val secret = factory.generateSecret(spec)
+            val keyBytes = secret.encoded
+            try {
+                return SecretKeySpec(keyBytes, "AES")
+            } finally {
+                keyBytes.fill(0)
+            }
+        } finally {
+            spec.clearPassword()
+        }
     }
 
     companion object {
-        private val BACKUP_MAGIC = "GVBK".toByteArray(Charsets.UTF_8) // Grapevine Backup
+        /** Magic bytes identifying a Grapevine backup file */
+        private val BACKUP_MAGIC = "GVBK".toByteArray(Charsets.UTF_8)
+        /** Current backup format version */
         private const val BACKUP_VERSION = 1
+        /** Salt size for PBKDF2 key derivation (128 bits) */
         private const val SALT_SIZE = 16
+        /** IV size for AES-GCM (96 bits - standard GCM nonce size) */
         private const val IV_SIZE = 12
+        /** GCM authentication tag size (128 bits) */
         private const val TAG_SIZE = 16
+        /** PBKDF2 iteration count - balance between security and performance */
         private const val PBKDF2_ITERATIONS = 100_000
+        /** Ed25519 private key size (seed + public key = 64 bytes) */
+        private const val PRIVATE_KEY_SIZE = 64
+        /** Ed25519 public key size (32 bytes) */
+        private const val PUBLIC_KEY_SIZE = 32
     }
 }
 
 /**
  * Data class for serializing backup content.
+ * Contains the private key and identity metadata for backup/restore operations.
  */
 @Serializable
 data class BackupData(
     val version: Int,
-    @Serializable(with = io.grapevine.core.serialization.ByteArraySerializer::class)
+    @Serializable(with = ByteArraySerializer::class)
     val privateKey: ByteArray,
-    @Serializable(with = io.grapevine.core.serialization.ByteArraySerializer::class)
+    @Serializable(with = ByteArraySerializer::class)
     val publicKey: ByteArray,
     val displayName: String? = null,
     val avatarHash: String? = null,
