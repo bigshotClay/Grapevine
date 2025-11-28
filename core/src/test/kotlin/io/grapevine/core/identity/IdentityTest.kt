@@ -880,4 +880,119 @@ class IdentityTest {
         assertNull(restored.bio)
         assertEquals(12345L, restored.createdAt)
     }
+
+    // ==================== Serialization Canonicality Tests ====================
+
+    @Test
+    fun `serialized form contains canonical values`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        // Create with non-canonical inputs
+        val upperHash = "ABCDEF0123456789".repeat(4) // uppercase
+        val nfdName = "cafe\u0301" // NFD form (e + combining accent)
+        val spacedBio = "  hello world  " // extra whitespace
+
+        val identity = Identity(
+            publicKey = publicKey,
+            displayName = nfdName,
+            avatarHash = upperHash,
+            bio = spacedBio,
+            createdAt = 12345L
+        )
+
+        val json = Json.encodeToString(Identity.serializer(), identity)
+
+        // Verify serialized JSON contains canonical values
+        assertTrue(json.contains(upperHash.lowercase()), "Serialized avatarHash should be lowercase")
+        assertTrue(json.contains("café"), "Serialized displayName should be NFC normalized")
+        assertTrue(json.contains("hello world"), "Serialized bio should be trimmed")
+        assertFalse(json.contains("  hello"), "Serialized bio should not have leading spaces")
+    }
+
+    @Test
+    fun `serialize then deserialize produces identical canonical values`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val upperHash = "ABCDEF0123456789".repeat(4)
+        val nfdName = "cafe\u0301"
+
+        val original = Identity(
+            publicKey = publicKey,
+            displayName = nfdName,
+            avatarHash = upperHash,
+            bio = "  test  ",
+            createdAt = 12345L
+        )
+
+        val json = Json.encodeToString(Identity.serializer(), original)
+        val restored = Json.decodeFromString(Identity.serializer(), json)
+
+        // Both should have canonical values
+        assertEquals("café", original.displayName)
+        assertEquals("café", restored.displayName)
+        assertEquals(upperHash.lowercase(), original.avatarHash)
+        assertEquals(upperHash.lowercase(), restored.avatarHash)
+        assertEquals("test", original.bio)
+        assertEquals("test", restored.bio)
+        assertEquals(original, restored)
+    }
+
+    @Test
+    fun `serialize deserialize serialize produces identical JSON - idempotent`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+
+        val identity = Identity(
+            publicKey = publicKey,
+            displayName = "Alice",
+            avatarHash = validAvatarHash,
+            bio = "Hello",
+            createdAt = 12345L
+        )
+
+        val json1 = Json.encodeToString(Identity.serializer(), identity)
+        val restored = Json.decodeFromString(Identity.serializer(), json1)
+        val json2 = Json.encodeToString(Identity.serializer(), restored)
+
+        assertEquals(json1, json2, "Serialization should be idempotent")
+    }
+
+    @Test
+    fun `deserialize non-canonical data then reserialize produces canonical JSON`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+        val upperHash = "ABCDEF0123456789".repeat(4)
+
+        // Manually construct non-canonical JSON (as might come from external source)
+        val nonCanonicalJson = """{"publicKey":"$publicKeyBase64","displayName":"  Alice  ","avatarHash":"$upperHash","bio":"  hello  ","createdAt":12345}"""
+
+        val restored = Json.decodeFromString(Identity.serializer(), nonCanonicalJson)
+        val canonicalJson = Json.encodeToString(Identity.serializer(), restored)
+
+        // The re-serialized JSON should have canonical values
+        assertTrue(canonicalJson.contains(upperHash.lowercase()))
+        assertTrue(canonicalJson.contains("\"displayName\":\"Alice\""))
+        assertTrue(canonicalJson.contains("\"bio\":\"hello\""))
+    }
+
+    @Test
+    fun `copy with non-canonical values stores canonical form`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val original = Identity(publicKey = publicKey, displayName = "Alice")
+
+        // Copy with non-canonical values
+        val copied = original.copy(
+            displayName = "  Bob  ", // extra spaces
+            avatarHash = "ABCDEF0123456789".repeat(4), // uppercase
+            bio = "cafe\u0301" // NFD
+        )
+
+        // Verify stored values are canonical
+        assertEquals("Bob", copied.displayName)
+        assertEquals("abcdef0123456789".repeat(4), copied.avatarHash)
+        assertEquals("café", copied.bio)
+
+        // Serialize and verify canonical form persists
+        val json = Json.encodeToString(Identity.serializer(), copied)
+        assertTrue(json.contains("\"displayName\":\"Bob\""))
+        assertTrue(json.contains("abcdef0123456789"))
+        assertTrue(json.contains("café"))
+    }
 }
