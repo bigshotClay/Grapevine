@@ -6,11 +6,13 @@ CREATE TABLE identity (
     display_name TEXT,
     avatar_hash TEXT,
     is_local INTEGER NOT NULL DEFAULT 0,
+    is_genesis INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
 
 CREATE INDEX identity_is_local ON identity(is_local);
+CREATE INDEX identity_is_genesis ON identity(is_genesis);
 
 getById:
 SELECT * FROM identity WHERE id = ?;
@@ -18,15 +20,24 @@ SELECT * FROM identity WHERE id = ?;
 getLocal:
 SELECT * FROM identity WHERE is_local = 1 LIMIT 1;
 
+getGenesis:
+SELECT * FROM identity WHERE is_genesis = 1 LIMIT 1;
+
 getAll:
 SELECT * FROM identity ORDER BY created_at DESC;
 
 insert:
-INSERT OR REPLACE INTO identity(id, public_key, display_name, avatar_hash, is_local, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO identity(id, public_key, display_name, avatar_hash, is_local, is_genesis, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
 updateDisplayName:
 UPDATE identity SET display_name = ?, updated_at = ? WHERE id = ?;
 
+setGenesis:
+UPDATE identity SET is_genesis = 1, updated_at = ? WHERE id = ?;
+
 delete:
 DELETE FROM identity WHERE id = ?;
+
+hasGenesis:
+SELECT COUNT(*) FROM identity WHERE is_genesis = 1;

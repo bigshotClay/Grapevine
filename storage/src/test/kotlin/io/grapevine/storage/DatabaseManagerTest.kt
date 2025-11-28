@@ -36,6 +36,7 @@ class DatabaseManagerTest {
             display_name = "Test User",
             avatar_hash = null,
             is_local = 1L,
+            is_genesis = 0L,
             created_at = now,
             updated_at = now
         )
@@ -59,8 +60,8 @@ class DatabaseManagerTest {
         val now = System.currentTimeMillis()
 
         // Create two identities
-        db.identityQueries.insert("user-1", "key1".toByteArray(), "User 1", null, 1L, now, now)
-        db.identityQueries.insert("user-2", "key2".toByteArray(), "User 2", null, 0L, now, now)
+        db.identityQueries.insert("user-1", "key1".toByteArray(), "User 1", null, 1L, 0L, now, now)
+        db.identityQueries.insert("user-2", "key2".toByteArray(), "User 2", null, 0L, 0L, now, now)
 
         // Create follow relationship
         db.followRelationshipQueries.insert(

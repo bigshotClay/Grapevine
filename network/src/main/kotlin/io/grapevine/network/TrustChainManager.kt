@@ -16,6 +16,8 @@ import org.slf4j.LoggerFactory
  * Block types used in Grapevine.
  */
 object BlockTypes {
+    /** Genesis block marking the first user who bootstrapped the network */
+    const val GENESIS = "grapevine_genesis"
     const val INVITE = "grapevine_invite"
     const val POST = "grapevine_post"
     const val FOLLOW = "grapevine_follow"
@@ -40,6 +42,54 @@ class TrustChainManager(
         setupValidators()
         setupBlockSigners()
         setupBlockListeners()
+    }
+
+    /**
+     * Creates a genesis block marking this user as the network founder.
+     *
+     * The genesis block is a self-signed block that establishes the user as
+     * the root of the trust chain. Only one genesis block should exist per network.
+     *
+     * @param displayName Optional display name for the genesis user
+     * @return The created block, or null if creation failed
+     */
+    fun createGenesisBlock(displayName: String? = null): TrustChainBlock? {
+        val community = trustChain ?: return null
+
+        val transaction = mutableMapOf<String, Any?>(
+            "timestamp" to System.currentTimeMillis(),
+            "version" to 1
+        )
+        if (displayName != null) {
+            transaction["display_name"] = displayName
+        }
+
+        // Genesis block is self-signed (proposal to self)
+        return community.createProposalBlock(
+            BlockTypes.GENESIS,
+            transaction,
+            community.myPeer.publicKey.keyToBin()
+        )
+    }
+
+    /**
+     * Checks if a genesis block exists in the local chain.
+     *
+     * @return true if a genesis block exists, false otherwise
+     */
+    fun hasGenesisBlock(): Boolean {
+        val blocks = getBlocksByType(BlockTypes.GENESIS)
+        return blocks.isNotEmpty()
+    }
+
+    /**
+     * Gets the genesis block if it exists.
+     *
+     * @return The genesis block, or null if none exists
+     */
+    fun getGenesisBlock(): TrustChainBlock? {
+        val blocks = getBlocksByType(BlockTypes.GENESIS)
+        return blocks.firstOrNull()
     }
 
     /**
@@ -219,6 +269,21 @@ class TrustChainManager(
     private fun setupValidators() {
         val community = trustChain ?: return
 
+        // Validate genesis blocks
+        community.registerTransactionValidator(BlockTypes.GENESIS, object : TransactionValidator {
+            override fun validate(block: TrustChainBlock, database: TrustChainStore): ValidationResult {
+                // Genesis blocks must have a timestamp
+                val hasTimestamp = block.transaction["timestamp"] != null
+                // Genesis blocks are self-signed (public key equals link public key)
+                val isSelfSigned = block.publicKey.contentEquals(block.linkPublicKey)
+                return if ((hasTimestamp && isSelfSigned) || block.isAgreement) {
+                    ValidationResult.Valid
+                } else {
+                    ValidationResult.Invalid(listOf("Genesis block must be self-signed with timestamp"))
+                }
+            }
+        })
+
         // Validate post blocks
         community.registerTransactionValidator(BlockTypes.POST, object : TransactionValidator {
             override fun validate(block: TrustChainBlock, database: TrustChainStore): ValidationResult {
@@ -298,6 +363,13 @@ class TrustChainManager(
     private fun setupBlockListeners() {
         val community = trustChain ?: return
 
+        community.addListener(BlockTypes.GENESIS, object : BlockListener {
+            override fun onBlockReceived(block: TrustChainBlock) {
+                logger.info("Received genesis block: ${block.blockId}")
+                blockListeners.forEach { it.onGenesisReceived(block) }
+            }
+        })
+
         community.addListener(BlockTypes.POST, object : BlockListener {
             override fun onBlockReceived(block: TrustChainBlock) {
                 logger.debug("Received post block: ${block.blockId}")
@@ -337,6 +409,7 @@ class TrustChainManager(
      * Listener interface for Grapevine-specific blocks.
      */
     interface GrapevineBlockListener {
+        fun onGenesisReceived(block: TrustChainBlock) {}
         fun onPostReceived(block: TrustChainBlock) {}
         fun onInviteReceived(block: TrustChainBlock) {}
         fun onFollowReceived(block: TrustChainBlock) {}
