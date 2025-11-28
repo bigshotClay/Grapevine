@@ -3,6 +3,7 @@ package io.grapevine.core.identity
 import io.grapevine.core.serialization.ByteArraySerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import java.text.Normalizer
 import java.util.Base64
 
@@ -37,9 +38,12 @@ class Identity private constructor(
     @Serializable(with = ByteArraySerializer::class)
     @SerialName("publicKey")
     private val _publicKey: ByteArray,
-    val displayName: String?,
-    val avatarHash: String?,
-    val bio: String?,
+    @SerialName("displayName")
+    private val _displayName: String?,
+    @SerialName("avatarHash")
+    private val _avatarHash: String?,
+    @SerialName("bio")
+    private val _bio: String?,
     val createdAt: Long
 ) {
     /**
@@ -48,6 +52,30 @@ class Identity private constructor(
      */
     val publicKey: ByteArray
         get() = _publicKey.copyOf()
+
+    /**
+     * The normalized display name.
+     * Normalization (NFC, trim, empty-to-null) is applied to ensure consistent behavior
+     * regardless of construction path (factory or deserialization).
+     */
+    @Transient
+    val displayName: String? = _displayName?.let { normalizeText(it) }
+
+    /**
+     * The normalized avatar hash (lowercased).
+     * Normalization is applied to ensure consistent behavior
+     * regardless of construction path (factory or deserialization).
+     */
+    @Transient
+    val avatarHash: String? = _avatarHash?.lowercase()
+
+    /**
+     * The normalized bio.
+     * Normalization (NFC, trim, empty-to-null) is applied to ensure consistent behavior
+     * regardless of construction path (factory or deserialization).
+     */
+    @Transient
+    val bio: String? = _bio?.let { normalizeText(it) }
 
     /**
      * Returns the public key as a URL-safe Base64-encoded string (no padding).
@@ -73,8 +101,8 @@ class Identity private constructor(
         require(_publicKey.size == PUBLIC_KEY_SIZE) {
             "Public key must be $PUBLIC_KEY_SIZE bytes"
         }
-        // Note: displayName and bio are already normalized/trimmed by the factory
-        // Validation here checks the processed values
+
+        // Validate after normalization (displayName, avatarHash, bio are normalized above)
         if (displayName != null) {
             requireNoControlChars(displayName, "Display name")
             val codePointCount = displayName.codePointCount(0, displayName.length)
@@ -97,15 +125,18 @@ class Identity private constructor(
      */
     fun deepCopy(): Identity = Identity(
         _publicKey = _publicKey.copyOf(),
-        displayName = displayName,
-        avatarHash = avatarHash,
-        bio = bio,
+        _displayName = displayName,
+        _avatarHash = avatarHash,
+        _bio = bio,
         createdAt = createdAt
     )
 
     /**
      * Creates a copy with the specified fields changed.
      * The public key is deep-copied by default to maintain immutability.
+     *
+     * Note: This method calls the primary constructor directly (not invoke) to avoid
+     * double-copying the public key array. The caller-provided publicKey is copied once.
      *
      * @param publicKey New public key (defensively copied). Defaults to a copy of current key.
      * @param displayName New display name. Pass current value to keep, null to clear.
@@ -114,16 +145,16 @@ class Identity private constructor(
      * @param createdAt New creation timestamp.
      */
     fun copy(
-        publicKey: ByteArray = this._publicKey.copyOf(),
+        publicKey: ByteArray = this._publicKey,
         displayName: String? = this.displayName,
         avatarHash: String? = this.avatarHash,
         bio: String? = this.bio,
         createdAt: Long = this.createdAt
-    ): Identity = invoke(
-        publicKey = publicKey,
-        displayName = displayName,
-        avatarHash = avatarHash,
-        bio = bio,
+    ): Identity = Identity(
+        _publicKey = publicKey.copyOf(),
+        _displayName = displayName,
+        _avatarHash = avatarHash,
+        _bio = bio,
         createdAt = createdAt
     )
 
@@ -161,14 +192,22 @@ class Identity private constructor(
 
     /**
      * Returns a safe string representation that does not leak the full public key.
-     * Shows shortId instead of full key bytes. Bio is truncated if long.
+     * Shows shortId instead of full key bytes. Bio is truncated if long (using codepoints).
      */
     override fun toString(): String {
         val safeBio = bio?.let { b ->
             val escaped = b.replace("\n", "\\n").replace("\r", "\\r")
-            if (escaped.length > 40) "${escaped.take(37)}..." else escaped
+            val codePointCount = escaped.codePointCount(0, escaped.length)
+            if (codePointCount > 40) {
+                // Take first 37 codepoints, not chars
+                val endIndex = escaped.offsetByCodePoints(0, 37.coerceAtMost(codePointCount))
+                "${escaped.substring(0, endIndex)}..."
+            } else {
+                escaped
+            }
         }
-        return "Identity(shortId=$shortId, displayName=$displayName, avatarHash=${avatarHash?.take(8)}..., bio=$safeBio, createdAt=$createdAt)"
+        val safeAvatarHash = avatarHash?.let { "${it.take(8)}..." } ?: "none"
+        return "Identity(shortId=$shortId, displayName=$displayName, avatarHash=$safeAvatarHash, bio=$safeBio, createdAt=$createdAt)"
     }
 
     companion object {
@@ -180,13 +219,16 @@ class Identity private constructor(
         const val PUBLIC_KEY_SIZE = 32
         /** Regex pattern for valid avatar hash (lowercase hex string, 64 chars for SHA-256) */
         private val AVATAR_HASH_PATTERN = Regex("^[a-f0-9]{64}$")
-        /** Control characters to reject in display names (C0, C1, and other problematic chars) */
-        private val CONTROL_CHAR_PATTERN = Regex("[\\p{Cc}\\p{Cf}\\p{Co}\\p{Cn}]")
+        /** Control characters to reject in display names (C0 and C1 control codes only) */
+        private val CONTROL_CHAR_PATTERN = Regex("[\\p{Cc}]")
 
         /**
          * Creates a new Identity with the given parameters.
          * The public key is defensively copied. Display name and bio are
          * NFC-normalized and trimmed. Avatar hash is lowercased.
+         *
+         * Note: Normalization is performed in init, so the factory passes values directly.
+         * This ensures consistent behavior whether created via factory or deserialization.
          *
          * @param publicKey Ed25519 public key (32 bytes)
          * @param displayName Optional display name (max 64 Unicode codepoints, cannot be blank)
@@ -202,9 +244,9 @@ class Identity private constructor(
             createdAt: Long = System.currentTimeMillis()
         ): Identity = Identity(
             _publicKey = publicKey.copyOf(),
-            displayName = displayName?.let { normalizeText(it) },
-            avatarHash = avatarHash?.lowercase(),
-            bio = bio?.let { normalizeText(it) },
+            _displayName = displayName,
+            _avatarHash = avatarHash,
+            _bio = bio,
             createdAt = createdAt
         )
 

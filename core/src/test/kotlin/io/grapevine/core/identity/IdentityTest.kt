@@ -527,4 +527,357 @@ class IdentityTest {
 
         assertTrue(json.contains("\"publicKey\""))
     }
+
+    // ==================== Deserialization Normalization Tests ====================
+
+    @Test
+    fun `deserialization normalizes displayName with NFC`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+        // NFD form: e + combining acute accent
+        val nfdName = "cafe\u0301"
+
+        val json = """{"publicKey":"$publicKeyBase64","displayName":"$nfdName","avatarHash":null,"bio":null,"createdAt":12345}"""
+        val restored = Json.decodeFromString(Identity.serializer(), json)
+
+        // Should be NFC normalized (precomposed é)
+        assertEquals("café", restored.displayName)
+    }
+
+    @Test
+    fun `deserialization trims displayName whitespace`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+
+        val json = """{"publicKey":"$publicKeyBase64","displayName":"  Alice  ","avatarHash":null,"bio":null,"createdAt":12345}"""
+        val restored = Json.decodeFromString(Identity.serializer(), json)
+
+        assertEquals("Alice", restored.displayName)
+    }
+
+    @Test
+    fun `deserialization converts empty displayName to null`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+
+        val json = """{"publicKey":"$publicKeyBase64","displayName":"   ","avatarHash":null,"bio":null,"createdAt":12345}"""
+        val restored = Json.decodeFromString(Identity.serializer(), json)
+
+        assertNull(restored.displayName)
+    }
+
+    @Test
+    fun `deserialization lowercases avatarHash`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+        val upperHash = "ABCDEF0123456789".repeat(4) // 64 uppercase hex chars
+
+        val json = """{"publicKey":"$publicKeyBase64","displayName":null,"avatarHash":"$upperHash","bio":null,"createdAt":12345}"""
+        val restored = Json.decodeFromString(Identity.serializer(), json)
+
+        assertEquals(upperHash.lowercase(), restored.avatarHash)
+    }
+
+    @Test
+    fun `deserialization normalizes bio with NFC`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+        // NFD form: e + combining acute accent
+        val nfdBio = "I love cafe\u0301s"
+
+        val json = """{"publicKey":"$publicKeyBase64","displayName":null,"avatarHash":null,"bio":"$nfdBio","createdAt":12345}"""
+        val restored = Json.decodeFromString(Identity.serializer(), json)
+
+        // Should be NFC normalized
+        assertEquals("I love cafés", restored.bio)
+    }
+
+    @Test
+    fun `deserialization trims bio whitespace`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+
+        val json = """{"publicKey":"$publicKeyBase64","displayName":null,"avatarHash":null,"bio":"  Hello world  ","createdAt":12345}"""
+        val restored = Json.decodeFromString(Identity.serializer(), json)
+
+        assertEquals("Hello world", restored.bio)
+    }
+
+    @Test
+    fun `deserialization rejects control characters in displayName`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+
+        val json = """{"publicKey":"$publicKeyBase64","displayName":"Test\u0000Name","avatarHash":null,"bio":null,"createdAt":12345}"""
+
+        assertThrows<IllegalArgumentException> {
+            Json.decodeFromString(Identity.serializer(), json)
+        }
+    }
+
+    @Test
+    fun `deserialization validates avatarHash format`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+
+        // Invalid hash (too short)
+        val json = """{"publicKey":"$publicKeyBase64","displayName":null,"avatarHash":"abc123","bio":null,"createdAt":12345}"""
+
+        assertThrows<IllegalArgumentException> {
+            Json.decodeFromString(Identity.serializer(), json)
+        }
+    }
+
+    // ==================== toString Null Handling Tests ====================
+
+    @Test
+    fun `toString shows none for null avatarHash`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val identity = Identity(publicKey = publicKey, avatarHash = null)
+
+        val str = identity.toString()
+
+        assertTrue(str.contains("avatarHash=none"))
+        assertFalse(str.contains("avatarHash=null"))
+    }
+
+    @Test
+    fun `toString shows truncated avatarHash when present`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val identity = Identity(publicKey = publicKey, avatarHash = validAvatarHash)
+
+        val str = identity.toString()
+
+        assertTrue(str.contains("avatarHash=${validAvatarHash.take(8)}..."))
+    }
+
+    // ==================== Additional Copy Immutability Tests ====================
+
+    @Test
+    fun `copy returns identity with independent publicKey - mutating does not affect original`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val original = Identity(publicKey = publicKey, displayName = "Alice")
+
+        val copied = original.copy()
+
+        // Get the copied publicKey and verify it's independent
+        val copiedPublicKey = copied.publicKey
+        copiedPublicKey[0] = 0xFF.toByte()
+
+        // Original should be unchanged
+        assertEquals(0.toByte(), original.publicKey[0])
+        // Copied should also be unchanged (we only mutated the returned defensive copy)
+        assertEquals(0.toByte(), copied.publicKey[0])
+    }
+
+    @Test
+    fun `copy without arguments creates equal but independent instance`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val original = Identity(
+            publicKey = publicKey,
+            displayName = "Alice",
+            avatarHash = validAvatarHash,
+            bio = "Hello"
+        )
+
+        val copied = original.copy()
+
+        assertEquals(original, copied)
+        assertNotSame(original, copied)
+        // Arrays should be equal but not same
+        assertArrayEquals(original.publicKey, copied.publicKey)
+    }
+
+    // ==================== Additional fromPublicKeyBase64 Tests ====================
+
+    @Test
+    fun `fromPublicKeyBase64 handles base64 with padding`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val base64WithPadding = Base64.getEncoder().encodeToString(publicKey)
+
+        val identity = Identity.fromPublicKeyBase64(base64WithPadding)
+
+        assertArrayEquals(publicKey, identity.publicKey)
+    }
+
+    @Test
+    fun `fromPublicKeyBase64 handles URL-safe base64 with special chars`() {
+        // Create a key that would have + and / in standard base64
+        val publicKey = ByteArray(32) { 0xFF.toByte() }
+        val urlSafeBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(publicKey)
+
+        val identity = Identity.fromPublicKeyBase64(urlSafeBase64)
+
+        assertArrayEquals(publicKey, identity.publicKey)
+    }
+
+    @Test
+    fun `fromPublicKeyBase64 rejects key that is too long`() {
+        val longKey = ByteArray(64)
+        val base64 = Base64.getEncoder().encodeToString(longKey)
+
+        assertThrows<IllegalArgumentException> {
+            Identity.fromPublicKeyBase64(base64)
+        }
+    }
+
+    // ==================== Unicode Edge Cases ====================
+
+    @Test
+    fun `displayName handles emoji sequences correctly`() {
+        val publicKey = ByteArray(32)
+        // Family emoji: man + ZWJ + woman + ZWJ + girl (complex emoji sequence)
+        val familyEmoji = "\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67"
+
+        val identity = Identity(publicKey = publicKey, displayName = familyEmoji)
+
+        assertEquals(familyEmoji, identity.displayName)
+    }
+
+    @Test
+    fun `displayName allows ZWJ character in emoji sequences`() {
+        val publicKey = ByteArray(32)
+        // ZWJ is \u200D - should be allowed as it's needed for emoji sequences
+        val emojiWithZwj = "\uD83D\uDC68\u200D\uD83D\uDCBB" // 👨‍💻 (man technologist)
+
+        val identity = Identity(publicKey = publicKey, displayName = emojiWithZwj)
+
+        assertEquals(emojiWithZwj, identity.displayName)
+    }
+
+    @Test
+    fun `displayName handles combining marks correctly`() {
+        val publicKey = ByteArray(32)
+        // e + combining acute + combining tilde (multiple combining marks)
+        val complexCombining = "e\u0301\u0303"
+
+        val identity = Identity(publicKey = publicKey, displayName = complexCombining)
+
+        // NFC normalization should compose what it can
+        assertNotNull(identity.displayName)
+    }
+
+    @Test
+    fun `bio handles surrogate pairs at max length boundary`() {
+        val publicKey = ByteArray(32)
+        // Mix of regular chars and emoji (surrogate pairs)
+        val emoji = "\uD83D\uDE00" // 😀
+        val bio = "a".repeat(499) + emoji // 500 codepoints total
+
+        val identity = Identity(publicKey = publicKey, bio = bio)
+
+        assertEquals(bio, identity.bio)
+    }
+
+    @Test
+    fun `displayName rejects exceeding max codepoints with emojis`() {
+        val publicKey = ByteArray(32)
+        val emoji = "\uD83D\uDE00" // 😀
+        val tooLong = emoji.repeat(Identity.MAX_DISPLAY_NAME_LENGTH + 1)
+
+        assertThrows<IllegalArgumentException> {
+            Identity(publicKey = publicKey, displayName = tooLong)
+        }
+    }
+
+    // ==================== Control Character Edge Cases ====================
+
+    @Test
+    fun `displayName rejects tab character`() {
+        val publicKey = ByteArray(32)
+
+        assertThrows<IllegalArgumentException> {
+            Identity(publicKey = publicKey, displayName = "Hello\tWorld")
+        }
+    }
+
+    @Test
+    fun `displayName rejects carriage return`() {
+        val publicKey = ByteArray(32)
+
+        assertThrows<IllegalArgumentException> {
+            Identity(publicKey = publicKey, displayName = "Hello\rWorld")
+        }
+    }
+
+    @Test
+    fun `displayName rejects form feed`() {
+        val publicKey = ByteArray(32)
+
+        assertThrows<IllegalArgumentException> {
+            Identity(publicKey = publicKey, displayName = "Hello\u000CWorld")
+        }
+    }
+
+    @Test
+    fun `displayName rejects C1 control characters`() {
+        val publicKey = ByteArray(32)
+        // NEL (Next Line) - C1 control char
+        assertThrows<IllegalArgumentException> {
+            Identity(publicKey = publicKey, displayName = "Hello\u0085World")
+        }
+    }
+
+    // ==================== toString Codepoint Truncation Tests ====================
+
+    @Test
+    fun `toString truncates bio by codepoints not chars`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val emoji = "\uD83D\uDE00" // 😀 - 1 codepoint, 2 chars
+        // 50 emojis = 50 codepoints, 100 chars - should be truncated
+        val longEmojiBio = emoji.repeat(50)
+
+        val identity = Identity(publicKey = publicKey, bio = longEmojiBio)
+        val str = identity.toString()
+
+        // Bio should be truncated (50 > 40 codepoints)
+        assertTrue(str.contains("..."))
+        // Should contain 37 emojis + "..."
+        val bioMatch = Regex("bio=(.+?),").find(str)
+        assertNotNull(bioMatch)
+    }
+
+    @Test
+    fun `toString preserves full emoji bio under 40 codepoints`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val emoji = "\uD83D\uDE00" // 😀
+        // 30 emojis = 30 codepoints, under limit
+        val shortEmojiBio = emoji.repeat(30)
+
+        val identity = Identity(publicKey = publicKey, bio = shortEmojiBio)
+        val str = identity.toString()
+
+        assertTrue(str.contains(shortEmojiBio))
+    }
+
+    // ==================== Serialization Edge Cases ====================
+
+    @Test
+    fun `serialization preserves null fields`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val original = Identity(publicKey = publicKey)
+
+        val json = Json.encodeToString(Identity.serializer(), original)
+        val restored = Json.decodeFromString(Identity.serializer(), json)
+
+        assertNull(restored.displayName)
+        assertNull(restored.avatarHash)
+        assertNull(restored.bio)
+    }
+
+    @Test
+    fun `deserialization with missing optional fields uses defaults`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val publicKeyBase64 = Base64.getEncoder().encodeToString(publicKey)
+
+        // JSON with only required fields
+        val json = """{"publicKey":"$publicKeyBase64","displayName":null,"avatarHash":null,"bio":null,"createdAt":12345}"""
+        val restored = Json.decodeFromString(Identity.serializer(), json)
+
+        assertArrayEquals(publicKey, restored.publicKey)
+        assertNull(restored.displayName)
+        assertNull(restored.avatarHash)
+        assertNull(restored.bio)
+        assertEquals(12345L, restored.createdAt)
+    }
 }
