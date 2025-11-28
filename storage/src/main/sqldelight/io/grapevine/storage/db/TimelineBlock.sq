@@ -1,0 +1,46 @@
+-- Per-user timeline blocks
+
+CREATE TABLE timeline_block (
+    id TEXT PRIMARY KEY NOT NULL,
+    author_id TEXT NOT NULL,
+    sequence_number INTEGER NOT NULL,
+    block_type TEXT NOT NULL,
+    content_hash TEXT,
+    content_data TEXT,
+    previous_hash TEXT,
+    block_hash TEXT NOT NULL,
+    signature BLOB NOT NULL,
+    timestamp INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (author_id) REFERENCES identity(id)
+);
+
+CREATE INDEX timeline_block_author ON timeline_block(author_id);
+CREATE INDEX timeline_block_sequence ON timeline_block(author_id, sequence_number);
+CREATE INDEX timeline_block_type ON timeline_block(block_type);
+CREATE INDEX timeline_block_timestamp ON timeline_block(timestamp);
+
+getById:
+SELECT * FROM timeline_block WHERE id = ?;
+
+getByAuthor:
+SELECT * FROM timeline_block WHERE author_id = ? ORDER BY sequence_number ASC;
+
+getByAuthorPaginated:
+SELECT * FROM timeline_block WHERE author_id = ? ORDER BY sequence_number DESC LIMIT ? OFFSET ?;
+
+getLatestByAuthor:
+SELECT * FROM timeline_block WHERE author_id = ? ORDER BY sequence_number DESC LIMIT 1;
+
+getByType:
+SELECT * FROM timeline_block WHERE block_type = ? ORDER BY timestamp DESC;
+
+getFeed:
+SELECT * FROM timeline_block WHERE author_id IN ? ORDER BY timestamp DESC LIMIT ? OFFSET ?;
+
+insert:
+INSERT OR REPLACE INTO timeline_block(id, author_id, sequence_number, block_type, content_hash, content_data, previous_hash, block_hash, signature, timestamp, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+delete:
+DELETE FROM timeline_block WHERE id = ?;

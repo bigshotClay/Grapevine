@@ -1,0 +1,26 @@
+-- Local settings and configuration
+
+CREATE TABLE user_preference (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+getByKey:
+SELECT * FROM user_preference WHERE key = ?;
+
+getAll:
+SELECT * FROM user_preference ORDER BY key ASC;
+
+getValue:
+SELECT value FROM user_preference WHERE key = ?;
+
+set:
+INSERT OR REPLACE INTO user_preference(key, value, updated_at)
+VALUES (?, ?, ?);
+
+delete:
+DELETE FROM user_preference WHERE key = ?;
+
+deleteAll:
+DELETE FROM user_preference;

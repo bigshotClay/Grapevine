@@ -1,0 +1,45 @@
+-- Follow status between users
+
+CREATE TABLE follow_relationship (
+    id TEXT PRIMARY KEY NOT NULL,
+    follower_id TEXT NOT NULL,
+    following_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (follower_id) REFERENCES identity(id),
+    FOREIGN KEY (following_id) REFERENCES identity(id),
+    UNIQUE(follower_id, following_id)
+);
+
+CREATE INDEX follow_relationship_follower ON follow_relationship(follower_id);
+CREATE INDEX follow_relationship_following ON follow_relationship(following_id);
+CREATE INDEX follow_relationship_status ON follow_relationship(status);
+
+getById:
+SELECT * FROM follow_relationship WHERE id = ?;
+
+getFollowers:
+SELECT * FROM follow_relationship WHERE following_id = ? AND status = 'active' ORDER BY created_at DESC;
+
+getFollowing:
+SELECT * FROM follow_relationship WHERE follower_id = ? AND status = 'active' ORDER BY created_at DESC;
+
+getByPair:
+SELECT * FROM follow_relationship WHERE follower_id = ? AND following_id = ?;
+
+getFollowerCount:
+SELECT COUNT(*) FROM follow_relationship WHERE following_id = ? AND status = 'active';
+
+getFollowingCount:
+SELECT COUNT(*) FROM follow_relationship WHERE follower_id = ? AND status = 'active';
+
+insert:
+INSERT OR REPLACE INTO follow_relationship(id, follower_id, following_id, status, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?);
+
+updateStatus:
+UPDATE follow_relationship SET status = ?, updated_at = ? WHERE id = ?;
+
+delete:
+DELETE FROM follow_relationship WHERE id = ?;

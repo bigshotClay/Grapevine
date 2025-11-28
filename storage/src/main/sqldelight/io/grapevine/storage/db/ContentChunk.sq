@@ -1,0 +1,37 @@
+-- Cached content chunk data
+
+CREATE TABLE content_chunk (
+    id TEXT PRIMARY KEY NOT NULL,
+    content_hash TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    chunk_hash TEXT NOT NULL,
+    chunk_data BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (content_hash) REFERENCES content_metadata(content_hash),
+    UNIQUE(content_hash, chunk_index)
+);
+
+CREATE INDEX content_chunk_content ON content_chunk(content_hash);
+CREATE INDEX content_chunk_index ON content_chunk(content_hash, chunk_index);
+
+getById:
+SELECT * FROM content_chunk WHERE id = ?;
+
+getByContentHash:
+SELECT * FROM content_chunk WHERE content_hash = ? ORDER BY chunk_index ASC;
+
+getChunk:
+SELECT * FROM content_chunk WHERE content_hash = ? AND chunk_index = ?;
+
+getChunkCount:
+SELECT COUNT(*) FROM content_chunk WHERE content_hash = ?;
+
+insert:
+INSERT OR REPLACE INTO content_chunk(id, content_hash, chunk_index, chunk_hash, chunk_data, created_at)
+VALUES (?, ?, ?, ?, ?, ?);
+
+deleteByContentHash:
+DELETE FROM content_chunk WHERE content_hash = ?;
+
+delete:
+DELETE FROM content_chunk WHERE id = ?;
