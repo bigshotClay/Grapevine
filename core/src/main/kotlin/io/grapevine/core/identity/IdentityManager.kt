@@ -219,7 +219,7 @@ class IdentityManager(
         cachedPrivateKey = privateKey.copyOf()
         cachedIdentity = identity
 
-        logger.info("New identity created with short ID: ${identity.shortId}")
+        logger.info("New identity created with short ID: {}", identity.shortId)
         return identity
     }
 
@@ -256,7 +256,7 @@ class IdentityManager(
         cachedPrivateKey = privateKey.copyOf()
         cachedIdentity = identity
 
-        logger.info("Identity loaded with short ID: ${identity.shortId}")
+        logger.info("Identity loaded with short ID: {}", identity.shortId)
         return identity
     }
 
@@ -306,7 +306,7 @@ class IdentityManager(
         val identity = getIdentity()
 
         try {
-            logger.info("Exporting identity backup to ${outputFile.absolutePath}")
+            logger.info("Exporting identity backup to {}", outputFile.absolutePath)
             identityBackup.exportBackup(privateKey, identity, password, outputFile)
         } finally {
             // Zero our copy of the private key
@@ -325,7 +325,7 @@ class IdentityManager(
      * @throws IdentityException if storing the imported key fails
      */
     fun importBackup(backupFile: java.io.File, password: String): Identity {
-        logger.info("Importing identity backup from ${backupFile.absolutePath}")
+        logger.info("Importing identity backup from {}", backupFile.absolutePath)
 
         // Perform I/O outside of write lock
         val backupData = identityBackup.importBackup(backupFile, password)
@@ -346,7 +346,7 @@ class IdentityManager(
                 cachedPrivateKey = backupData.privateKey.copyOf()
                 cachedIdentity = identity
 
-                logger.info("Identity imported successfully with short ID: ${identity.shortId}")
+                logger.info("Identity imported successfully with short ID: {}", identity.shortId)
                 identity
             }
         } finally {
