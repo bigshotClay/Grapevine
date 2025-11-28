@@ -33,7 +33,9 @@ import java.util.Base64
  * @property displayName User-chosen display name (optional, max 64 Unicode codepoints, NFC normalized)
  * @property avatarHash Content hash of avatar image (optional, 64-char lowercase hex string)
  * @property bio User biography text (optional, max 500 Unicode codepoints)
- * @property createdAt Timestamp of identity creation (Unix epoch milliseconds). NOT included in equals/hashCode.
+ * @property createdAt Timestamp when this Identity object was instantiated (Unix epoch milliseconds).
+ *                     Note: This is NOT persisted and represents the local load/creation time,
+ *                     not the original identity creation time. NOT included in equals/hashCode.
  */
 @Serializable(with = IdentitySerializer::class)
 class Identity private constructor(

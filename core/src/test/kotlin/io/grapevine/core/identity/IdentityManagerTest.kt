@@ -469,6 +469,67 @@ class IdentityManagerTest {
             identityManager.loadIdentity()
         }
     }
+
+    @Test
+    fun `sign produces valid signature`() {
+        identityManager.initialize()
+        val message = "Test message".toByteArray()
+
+        val signature = identityManager.sign(message)
+
+        assertEquals(64, signature.size) // Ed25519 signature is 64 bytes
+    }
+
+    @Test
+    fun `sign and verify roundtrip succeeds`() {
+        identityManager.initialize()
+        val message = "Test message".toByteArray()
+        val publicKey = identityManager.getPublicKey()
+
+        val signature = identityManager.sign(message)
+        val verified = identityManager.verify(message, signature, publicKey)
+
+        assertTrue(verified)
+    }
+
+    @Test
+    fun `verify fails with wrong public key`() {
+        identityManager.initialize()
+        val message = "Test message".toByteArray()
+
+        val signature = identityManager.sign(message)
+
+        // Create a different identity manager to get a different key
+        val otherManager = IdentityManager(InMemorySecureStorage(), cryptoProvider)
+        otherManager.initialize()
+        val wrongPublicKey = otherManager.getPublicKey()
+
+        val verified = identityManager.verify(message, signature, wrongPublicKey)
+
+        assertFalse(verified)
+    }
+
+    @Test
+    fun `verify fails with tampered message`() {
+        identityManager.initialize()
+        val message = "Test message".toByteArray()
+        val tamperedMessage = "Tampered message".toByteArray()
+        val publicKey = identityManager.getPublicKey()
+
+        val signature = identityManager.sign(message)
+        val verified = identityManager.verify(tamperedMessage, signature, publicKey)
+
+        assertFalse(verified)
+    }
+
+    @Test
+    fun `sign throws when no identity exists`() {
+        val message = "Test message".toByteArray()
+
+        assertThrows<IdentityException> {
+            identityManager.sign(message)
+        }
+    }
 }
 
 /**
