@@ -10,6 +10,7 @@ import java.io.File
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.PosixFilePermission
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
@@ -31,6 +32,9 @@ import javax.crypto.spec.SecretKeySpec
  * - IV: 12 bytes (random, for AES-GCM - standard GCM nonce size)
  * - Ciphertext: Variable length (encrypted JSON + 16-byte GCM auth tag)
  *
+ * The magic bytes and version are used as GCM Additional Authenticated Data (AAD),
+ * binding them cryptographically to the ciphertext and preventing header tampering.
+ *
  * ## Key Representation
  * - Private key: 64 bytes - Ed25519 expanded private key (32-byte seed + 32-byte public key)
  *   This is the format used by libsodium's crypto_sign_seed_keypair output.
@@ -39,6 +43,9 @@ import javax.crypto.spec.SecretKeySpec
  * ## Security Notes
  * - PBKDF2-HMAC-SHA256 with 100,000 iterations is used for key derivation
  * - AES-256-GCM provides authenticated encryption with 128-bit auth tag
+ * - Header (magic + version) is authenticated via GCM AAD to prevent tampering
+ * - Backup files are created with owner-only permissions where supported (POSIX)
+ * - Temp files use cryptographically random suffixes to prevent race conditions
  * - Sensitive data (keys, plaintext, password chars) is zeroed after use
  * - Note: SecretKeySpec may internally copy key bytes, so complete memory
  *   clearing is not guaranteed. For higher security requirements, consider
@@ -79,19 +86,17 @@ class IdentityBackup {
 
         var plaintext: ByteArray? = null
         var passwordChars: CharArray? = null
+        var tempFile: File? = null
 
         try {
             // Ensure parent directory exists
-            val parentDir = outputFile.parentFile
-            if (parentDir != null && !parentDir.exists()) {
-                if (!parentDir.mkdirs()) {
-                    throw IdentityBackupException("Failed to create directory: ${parentDir.absolutePath}")
-                }
+            val parentDir = outputFile.parentFile ?: outputFile.absoluteFile.parentFile ?: File(".")
+            if (!parentDir.exists() && !parentDir.mkdirs()) {
+                throw IdentityBackupException("Failed to create directory: ${parentDir.absolutePath}")
             }
 
-            // Create backup data
+            // Create backup data (version not included in payload - only in header)
             val backupData = BackupData(
-                version = BACKUP_VERSION,
                 privateKey = privateKey,
                 publicKey = identity.publicKey,
                 displayName = identity.displayName,
@@ -114,45 +119,44 @@ class IdentityBackup {
             passwordChars = password.toCharArray()
             val key = deriveKey(passwordChars, salt)
 
-            // Encrypt
+            // Build header for AAD (Additional Authenticated Data)
+            val header = BACKUP_MAGIC + byteArrayOf(BACKUP_VERSION.toByte())
+
+            // Encrypt with header as AAD to prevent header tampering
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_SIZE * 8, iv))
+            cipher.updateAAD(header)
             val ciphertext = cipher.doFinal(plaintext)
 
-            // Write backup file atomically: temp file -> rename
-            val tempFile = File(parentDir ?: outputFile.absoluteFile.parentFile, "${outputFile.name}.tmp")
-            try {
-                tempFile.outputStream().use { out ->
-                    out.write(BACKUP_MAGIC)
-                    out.write(byteArrayOf(BACKUP_VERSION.toByte()))
-                    out.write(salt)
-                    out.write(iv)
-                    out.write(ciphertext)
-                }
-                // Try atomic move first, fall back to regular move if unsupported
-                try {
-                    Files.move(
-                        tempFile.toPath(),
-                        outputFile.toPath(),
-                        StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE
-                    )
-                } catch (e: AtomicMoveNotSupportedException) {
-                    logger.debug("Atomic move not supported, falling back to regular move")
-                    Files.move(
-                        tempFile.toPath(),
-                        outputFile.toPath(),
-                        StandardCopyOption.REPLACE_EXISTING
-                    )
-                }
-            } catch (e: Exception) {
-                tempFile.delete() // Clean up temp file on failure
-                throw e
+            // Create secure temp file with random suffix to prevent race conditions
+            val randomSuffix = ByteArray(8).also { secureRandom.nextBytes(it) }
+                .joinToString("") { "%02x".format(it) }
+            tempFile = File(parentDir, "${outputFile.name}.$randomSuffix.tmp")
+
+            // Write to temp file
+            tempFile.outputStream().use { out ->
+                out.write(header)
+                out.write(salt)
+                out.write(iv)
+                out.write(ciphertext)
             }
+
+            // Set restrictive permissions before moving (POSIX systems)
+            setRestrictivePermissions(tempFile)
+
+            // Move to final destination
+            moveFile(tempFile, outputFile)
+            tempFile = null // Successfully moved, don't delete in finally
+
+            // Set permissions on final file as well (in case move didn't preserve them)
+            setRestrictivePermissions(outputFile)
 
             logger.info("Identity backup created successfully")
         } catch (e: IdentityBackupException) {
             throw e
+        } catch (e: SecurityException) {
+            logger.error("Permission denied creating backup", e)
+            throw IdentityBackupException("Permission denied creating backup file", e)
         } catch (e: Exception) {
             logger.error("Failed to create identity backup", e)
             throw IdentityBackupException("Failed to create backup", e)
@@ -160,6 +164,8 @@ class IdentityBackup {
             // Zero sensitive data
             plaintext?.fill(0)
             passwordChars?.fill('\u0000')
+            // Clean up temp file if it still exists
+            tempFile?.delete()
         }
     }
 
@@ -185,23 +191,26 @@ class IdentityBackup {
 
             // Minimum size check: magic + version + salt + iv + at least GCM auth tag
             // (GCM tag is included in ciphertext, so ciphertext must be at least TAG_SIZE)
-            if (data.size < BACKUP_MAGIC.size + 1 + SALT_SIZE + IV_SIZE + TAG_SIZE) {
+            val headerSize = BACKUP_MAGIC.size + 1
+            if (data.size < headerSize + SALT_SIZE + IV_SIZE + TAG_SIZE) {
                 throw IdentityBackupException("Invalid backup file: too small")
             }
 
-            val magic = data.copyOfRange(0, BACKUP_MAGIC.size)
+            // Extract and validate header
+            val header = data.copyOfRange(0, headerSize)
+            val magic = header.copyOfRange(0, BACKUP_MAGIC.size)
             if (!magic.contentEquals(BACKUP_MAGIC)) {
                 throw IdentityBackupException("Invalid backup file: bad magic bytes")
             }
 
             // Read version (mask to unsigned byte)
-            val version = data[BACKUP_MAGIC.size].toInt() and 0xFF
+            val version = header[BACKUP_MAGIC.size].toInt() and 0xFF
             if (version != BACKUP_VERSION) {
                 throw IdentityBackupException("Unsupported backup version: $version")
             }
 
             // Extract components
-            var offset = BACKUP_MAGIC.size + 1
+            var offset = headerSize
             val salt = data.copyOfRange(offset, offset + SALT_SIZE)
             offset += SALT_SIZE
             val iv = data.copyOfRange(offset, offset + IV_SIZE)
@@ -212,9 +221,10 @@ class IdentityBackup {
             passwordChars = password.toCharArray()
             val key = deriveKey(passwordChars, salt)
 
-            // Decrypt
+            // Decrypt with header as AAD (must match encryption)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_SIZE * 8, iv))
+            cipher.updateAAD(header)
             plaintext = try {
                 cipher.doFinal(ciphertext)
             } catch (e: Exception) {
@@ -289,6 +299,53 @@ class IdentityBackup {
         }
     }
 
+    /**
+     * Sets restrictive file permissions (owner read/write only) on POSIX systems.
+     * On non-POSIX systems (e.g., Windows), attempts best-effort permission restriction.
+     */
+    private fun setRestrictivePermissions(file: File) {
+        try {
+            // Try POSIX permissions first
+            val posixPermissions = setOf(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE
+            )
+            Files.setPosixFilePermissions(file.toPath(), posixPermissions)
+        } catch (e: UnsupportedOperationException) {
+            // Not a POSIX filesystem (e.g., Windows) - use File API
+            file.setReadable(false, false)
+            file.setWritable(false, false)
+            file.setExecutable(false, false)
+            file.setReadable(true, true)
+            file.setWritable(true, true)
+        } catch (e: Exception) {
+            logger.debug("Could not set restrictive permissions on backup file", e)
+        }
+    }
+
+    /**
+     * Moves a file, trying atomic move first and falling back to regular move.
+     */
+    private fun moveFile(source: File, destination: File) {
+        try {
+            Files.move(
+                source.toPath(),
+                destination.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (e: AtomicMoveNotSupportedException) {
+            logger.debug("Atomic move not supported, falling back to regular move")
+            Files.move(
+                source.toPath(),
+                destination.toPath(),
+                StandardCopyOption.REPLACE_EXISTING
+            )
+        } catch (e: SecurityException) {
+            throw IdentityBackupException("Permission denied moving backup file", e)
+        }
+    }
+
     companion object {
         /** Magic bytes identifying a Grapevine backup file */
         private val BACKUP_MAGIC = "GVBK".toByteArray(Charsets.UTF_8)
@@ -312,10 +369,12 @@ class IdentityBackup {
 /**
  * Data class for serializing backup content.
  * Contains the private key and identity metadata for backup/restore operations.
+ *
+ * Note: The backup file format version is stored in the file header, not in this payload.
+ * This avoids redundancy and ensures the version is validated before decryption.
  */
 @Serializable
 data class BackupData(
-    val version: Int,
     @Serializable(with = ByteArraySerializer::class)
     val privateKey: ByteArray,
     @Serializable(with = ByteArraySerializer::class)
@@ -344,7 +403,6 @@ data class BackupData(
 
         other as BackupData
 
-        if (version != other.version) return false
         if (!privateKey.contentEquals(other.privateKey)) return false
         if (!publicKey.contentEquals(other.publicKey)) return false
         if (displayName != other.displayName) return false
@@ -356,8 +414,7 @@ data class BackupData(
     }
 
     override fun hashCode(): Int {
-        var result = version
-        result = 31 * result + privateKey.contentHashCode()
+        var result = privateKey.contentHashCode()
         result = 31 * result + publicKey.contentHashCode()
         result = 31 * result + (displayName?.hashCode() ?: 0)
         result = 31 * result + (avatarHash?.hashCode() ?: 0)
