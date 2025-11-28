@@ -120,26 +120,76 @@ class CryptoProviderTest {
     }
 
     @Test
-    fun `extractPublicKeyFromSecretKey returns correct public key`() {
+    fun `getPublicKeyFromSecretKey extracts public key from 64-byte secret key`() {
         val keyPair = crypto.generateSigningKeyPair()
 
-        val extractedPublicKey = crypto.extractPublicKeyFromSecretKey(keyPair.secretKey.asBytes)
+        val extractedPublicKey = crypto.getPublicKeyFromSecretKey(keyPair.secretKey.asBytes)
 
         assertArrayEquals(keyPair.publicKey.asBytes, extractedPublicKey)
     }
 
     @Test
-    fun `extractPublicKeyFromSecretKey throws for invalid key size`() {
-        assertThrows(IllegalArgumentException::class.java) {
-            crypto.extractPublicKeyFromSecretKey(ByteArray(32)) // Wrong size
-        }
+    fun `getPublicKeyFromSecretKey derives public key from 32-byte seed`() {
+        // Generate a keypair and extract the seed (first 32 bytes of secret key)
+        val keyPair = crypto.generateSigningKeyPair()
+        val seed = keyPair.secretKey.asBytes.copyOfRange(0, CryptoProvider.ED25519_SEED_BYTES)
 
-        assertThrows(IllegalArgumentException::class.java) {
-            crypto.extractPublicKeyFromSecretKey(ByteArray(0)) // Empty
-        }
+        val derivedPublicKey = crypto.getPublicKeyFromSecretKey(seed)
 
-        assertThrows(IllegalArgumentException::class.java) {
-            crypto.extractPublicKeyFromSecretKey(ByteArray(128)) // Too large
+        // The derived public key should match the original keypair's public key
+        assertArrayEquals(keyPair.publicKey.asBytes, derivedPublicKey)
+    }
+
+    @Test
+    fun `getPublicKeyFromSecretKey returns copy not reference for 64-byte key`() {
+        val keyPair = crypto.generateSigningKeyPair()
+        val secretKeyBytes = keyPair.secretKey.asBytes
+
+        val extractedPublicKey = crypto.getPublicKeyFromSecretKey(secretKeyBytes)
+
+        // Modify the extracted key and verify original is not affected
+        val originalBytes = keyPair.publicKey.asBytes.copyOf()
+        extractedPublicKey[0] = (extractedPublicKey[0].toInt() xor 0xFF).toByte()
+
+        // The original public key should remain unchanged
+        assertArrayEquals(originalBytes, keyPair.publicKey.asBytes)
+    }
+
+    @Test
+    fun `getPublicKeyFromSecretKey throws for invalid key size`() {
+        val exception16 = assertThrows(IllegalArgumentException::class.java) {
+            crypto.getPublicKeyFromSecretKey(ByteArray(16)) // Too small
         }
+        assertTrue(exception16.message!!.contains("16"))
+
+        val exception0 = assertThrows(IllegalArgumentException::class.java) {
+            crypto.getPublicKeyFromSecretKey(ByteArray(0)) // Empty
+        }
+        assertTrue(exception0.message!!.contains("0"))
+
+        val exception128 = assertThrows(IllegalArgumentException::class.java) {
+            crypto.getPublicKeyFromSecretKey(ByteArray(128)) // Too large
+        }
+        assertTrue(exception128.message!!.contains("128"))
+    }
+
+    @Test
+    fun `getPublicKeyFromSecretKey produces consistent results for same seed`() {
+        val seed = crypto.randomBytes(CryptoProvider.ED25519_SEED_BYTES)
+
+        val publicKey1 = crypto.getPublicKeyFromSecretKey(seed)
+        val publicKey2 = crypto.getPublicKeyFromSecretKey(seed)
+
+        assertArrayEquals(publicKey1, publicKey2)
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun `deprecated extractPublicKeyFromSecretKey delegates to new method`() {
+        val keyPair = crypto.generateSigningKeyPair()
+
+        val extractedPublicKey = crypto.extractPublicKeyFromSecretKey(keyPair.secretKey.asBytes)
+
+        assertArrayEquals(keyPair.publicKey.asBytes, extractedPublicKey)
     }
 }

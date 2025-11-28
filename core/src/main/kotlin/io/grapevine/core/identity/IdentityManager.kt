@@ -242,7 +242,7 @@ class IdentityManager(
 
         // Delegate public key extraction to CryptoProvider
         val publicKey = try {
-            cryptoProvider.extractPublicKeyFromSecretKey(privateKey)
+            cryptoProvider.getPublicKeyFromSecretKey(privateKey)
         } catch (e: IllegalArgumentException) {
             throw IdentityException("Invalid private key format: ${e.message}", e)
         }

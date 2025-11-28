@@ -87,21 +87,55 @@ class CryptoProvider {
     }
 
     /**
+     * Gets the public key from an Ed25519 secret key or seed.
+     *
+     * This method supports two input formats:
+     * - **64-byte secret key**: The standard libsodium format containing [32-byte seed][32-byte public key].
+     *   The public key is extracted directly from the last 32 bytes.
+     * - **32-byte seed**: The raw Ed25519 seed. The public key is derived by generating a keypair from the seed.
+     *
+     * This flexibility accommodates different key storage formats while providing a consistent interface.
+     *
+     * **Security note**: The returned ByteArray is a copy. Callers handling sensitive key material
+     * should consider zeroing arrays when they are no longer needed.
+     *
+     * @param secretKey Either a 64-byte Ed25519 secret key or a 32-byte seed
+     * @return The 32-byte Ed25519 public key (as a new array)
+     * @throws IllegalArgumentException if the secret key is not 32 or 64 bytes
+     * @see <a href="https://doc.libsodium.org/public-key_cryptography/public-key_signatures">libsodium Ed25519 documentation</a>
+     */
+    fun getPublicKeyFromSecretKey(secretKey: ByteArray): ByteArray {
+        return when (secretKey.size) {
+            ED25519_SECRET_KEY_BYTES -> {
+                // 64-byte secret key format: [32-byte seed][32-byte public key]
+                // Extract the embedded public key
+                secretKey.copyOfRange(ED25519_SECRET_KEY_BYTES - ED25519_PUBLIC_KEY_BYTES, ED25519_SECRET_KEY_BYTES)
+            }
+            ED25519_SEED_BYTES -> {
+                // 32-byte seed: derive the keypair and return the public key
+                val keyPair = sodium.cryptoSignSeedKeypair(secretKey)
+                keyPair.publicKey.asBytes.copyOf()
+            }
+            else -> throw IllegalArgumentException(
+                "Invalid secret key size: expected $ED25519_SECRET_KEY_BYTES or $ED25519_SEED_BYTES bytes, got ${secretKey.size}"
+            )
+        }
+    }
+
+    /**
      * Extracts the public key from an Ed25519 secret key.
      *
-     * Ed25519 secret keys in libsodium are 64 bytes: 32 bytes seed + 32 bytes public key.
-     * This method extracts the public key portion from the secret key.
-     *
+     * @deprecated Use [getPublicKeyFromSecretKey] which supports both 64-byte secret keys and 32-byte seeds.
      * @param secretKey The 64-byte Ed25519 secret key
      * @return The 32-byte public key
      * @throws IllegalArgumentException if the secret key is not 64 bytes
      */
+    @Deprecated(
+        message = "Use getPublicKeyFromSecretKey which supports both 64-byte secret keys and 32-byte seeds",
+        replaceWith = ReplaceWith("getPublicKeyFromSecretKey(secretKey)")
+    )
     fun extractPublicKeyFromSecretKey(secretKey: ByteArray): ByteArray {
-        require(secretKey.size == ED25519_SECRET_KEY_BYTES) {
-            "Invalid secret key size: expected $ED25519_SECRET_KEY_BYTES bytes, got ${secretKey.size}"
-        }
-        // Ed25519 secret key format: [32-byte seed][32-byte public key]
-        return secretKey.copyOfRange(ED25519_SECRET_KEY_BYTES - ED25519_PUBLIC_KEY_BYTES, ED25519_SECRET_KEY_BYTES)
+        return getPublicKeyFromSecretKey(secretKey)
     }
 
     /**
@@ -141,6 +175,7 @@ class CryptoProvider {
     companion object {
         const val ED25519_PUBLIC_KEY_BYTES = Sign.ED25519_PUBLICKEYBYTES
         const val ED25519_SECRET_KEY_BYTES = Sign.ED25519_SECRETKEYBYTES
+        const val ED25519_SEED_BYTES = Sign.ED25519_SEEDBYTES
         const val ED25519_SIGNATURE_BYTES = Sign.ED25519_BYTES
         const val X25519_PUBLIC_KEY_BYTES = Box.PUBLICKEYBYTES
         const val X25519_SECRET_KEY_BYTES = Box.SECRETKEYBYTES

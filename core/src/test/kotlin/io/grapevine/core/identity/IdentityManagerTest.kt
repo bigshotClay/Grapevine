@@ -462,8 +462,8 @@ class IdentityManagerTest {
 
     @Test
     fun `loadIdentity throws when storage returns malformed key`() {
-        // Store a malformed key (wrong size)
-        secureStorage.store(SecureStorage.PRIVATE_KEY_ID, ByteArray(32)) // Wrong size, should be 64
+        // Store a malformed key (invalid size - neither 32-byte seed nor 64-byte secret key)
+        secureStorage.store(SecureStorage.PRIVATE_KEY_ID, ByteArray(16))
 
         assertThrows<IdentityException> {
             identityManager.loadIdentity()
