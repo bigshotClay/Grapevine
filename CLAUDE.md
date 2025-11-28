@@ -4,9 +4,29 @@
 
 Grapevine is a decentralized, peer-to-peer social media platform built on IPv8 overlay networking and blockchain technology. The platform operates on the principle: "Owned by nobody; for everyone."
 
+## Development Workflow
+
+### Working on Epics
+
+When working on an epic, **complete one child issue at a time** in the order specified:
+
+1. Read the epic issue to understand the full scope
+2. Work on child issues **sequentially** in the listed order
+3. Complete each issue fully before moving to the next:
+   - Implement the feature
+   - Write tests
+   - Verify build passes
+4. After completing ALL child issues, create a single PR for the entire epic
+5. Do NOT work on multiple issues in parallel within an epic
+
+This ensures:
+- Each feature builds on the previous one correctly
+- Dependencies between issues are respected
+- Code review is manageable with atomic, focused changes
+
 ## Technology Stack
 
-- **Language**: Kotlin 1.9+ targeting JVM 17+
+- **Language**: Kotlin 2.1+ targeting JVM 17+
 - **P2P Networking**: kotlin-ipv8 library
 - **Blockchain**: TrustChain (via IPv8 TrustChainCommunity)
 - **UI Framework**: Compose for Desktop (Multiplatform)
