@@ -1,0 +1,39 @@
+# Software specification document (confidential)
+P2P_Social_Media_Software_Specification.docx
+*.docx
+
+# IDE
+.idea/
+*.iml
+
+# Build outputs
+build/
+out/
+target/
+
+# Gradle
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+
+# Kotlin
+*.class
+*.jar
+*.war
+*.ear
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local configuration
+local.properties
+*.local
+
+# Logs
+*.log
+logs/
+
+# Database files
+*.db
+*.sqlite

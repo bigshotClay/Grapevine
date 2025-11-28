@@ -1,0 +1,127 @@
+# Grapevine - Development Guidelines
+
+## Project Overview
+
+Grapevine is a decentralized, peer-to-peer social media platform built on IPv8 overlay networking and blockchain technology. The platform operates on the principle: "Owned by nobody; for everyone."
+
+## Technology Stack
+
+- **Language**: Kotlin 1.9+ targeting JVM 17+
+- **P2P Networking**: kotlin-ipv8 library
+- **Blockchain**: TrustChain (via IPv8 TrustChainCommunity)
+- **UI Framework**: Compose for Desktop (Multiplatform)
+- **Database**: SQLite via SQLDelight
+- **Cryptography**: Libsodium (Ed25519 signatures, X25519 key exchange)
+- **Build System**: Gradle with Kotlin DSL
+- **Serialization**: Protocol Buffers for network messages, JSON for storage
+
+## Code Review Requirements
+
+All code must be reviewed before being merged into main. Follow these guidelines:
+
+### Pull Request Process
+
+1. **Create a feature branch** for all new work:
+   ```bash
+   git checkout -b feature/<descriptive-name>
+   git checkout -b fix/<issue-description>
+   git checkout -b epic/<epic-number>-<short-description>
+   ```
+
+2. **Make commits** with clear, descriptive messages
+
+3. **Push your branch** and create a Pull Request:
+   ```bash
+   git push -u origin <branch-name>
+   gh pr create --title "Description" --body "Details"
+   ```
+
+4. **Request review** - PRs require at least one approval before merging
+
+5. **Address feedback** - Make requested changes and re-request review
+
+6. **Merge to main** only after approval:
+   ```bash
+   gh pr merge --squash
+   ```
+
+### Review Checklist
+
+Before approving a PR, reviewers should verify:
+
+- [ ] Code follows Kotlin coding conventions
+- [ ] All new code has accompanying tests
+- [ ] Tests pass locally and in CI
+- [ ] Code is properly documented where necessary
+- [ ] No security vulnerabilities introduced
+- [ ] Cryptographic operations use approved libraries (Libsodium)
+- [ ] No hardcoded secrets or credentials
+- [ ] Error handling is appropriate
+- [ ] Code does not break existing functionality
+
+## Testing Requirements
+
+**All code must have accompanying tests before acceptance.**
+
+### Test Coverage
+
+- Unit tests are required for all new functionality
+- Target >80% code coverage on core modules
+- Integration tests for P2P networking components
+- Tests must pass before PR can be merged
+
+### Running Tests
+
+```bash
+./gradlew test
+./gradlew check
+```
+
+### Test Guidelines
+
+1. **Unit Tests**: Test individual functions and classes in isolation
+2. **Integration Tests**: Test component interactions, especially for:
+   - IPv8 overlay communication
+   - TrustChain block creation and validation
+   - Database operations
+3. **Security Tests**: Verify cryptographic operations and signature validation
+
+## Branch Strategy
+
+- `main` - Production-ready code only. Protected branch.
+- `feature/*` - New features under development
+- `fix/*` - Bug fixes
+- `epic/*` - Large feature sets corresponding to project epics
+
+### Branch Rules
+
+1. Never commit directly to `main`
+2. All changes go through feature branches
+3. Feature branches must be up-to-date with main before merging
+4. Delete branches after merging
+
+## Project Structure
+
+```
+grapevine/
+├── core/       # Data models, cryptographic operations, chain logic
+├── network/    # IPv8 integration, SocialOverlay, peer management
+├── storage/    # Database access, content cache management
+├── sync/       # Timeline synchronization, content distribution
+├── ui/         # Compose Desktop user interface
+└── app/        # Application entry point, dependency injection
+```
+
+## Security Considerations
+
+- Private keys must be stored in OS-provided secure storage
+- All blocks must be cryptographically signed and verified
+- Content integrity verified against stored hashes
+- No encryption on content chains (transparency is a core principle)
+- Block signatures verified before processing
+
+## Getting Help
+
+- Check existing GitHub issues for known problems
+- Reference the project epics (Issues #1-#10) for feature scope
+- Follow the acceptance criteria defined in each epic

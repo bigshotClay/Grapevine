@@ -1,0 +1,68 @@
+[versions]
+kotlin = "2.1.0"
+coroutines = "1.9.0"
+serialization = "1.7.3"
+compose = "1.7.1"
+sqldelight = "2.0.1"
+ipv8 = "master-SNAPSHOT"
+lazysodium = "5.1.4"
+jna = "5.14.0"
+protobuf = "3.25.2"
+junit5 = "5.10.1"
+mockk = "1.13.9"
+slf4j = "2.0.11"
+logback = "1.4.14"
+
+[libraries]
+# Kotlin
+kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
+kotlin-reflect = { module = "org.jetbrains.kotlin:kotlin-reflect", version.ref = "kotlin" }
+
+# Coroutines
+coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+coroutines-swing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "coroutines" }
+coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+
+# Serialization
+serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+serialization-protobuf = { module = "org.jetbrains.kotlinx:kotlinx-serialization-protobuf", version.ref = "serialization" }
+
+# Database
+sqldelight-driver = { module = "app.cash.sqldelight:sqlite-driver", version.ref = "sqldelight" }
+sqldelight-coroutines = { module = "app.cash.sqldelight:coroutines-extensions-jvm", version.ref = "sqldelight" }
+
+# IPv8/TrustChain
+ipv8 = { module = "com.github.Tribler.kotlin-ipv8:ipv8", version.ref = "ipv8" }
+ipv8-jvm = { module = "com.github.Tribler.kotlin-ipv8:ipv8-jvm", version.ref = "ipv8" }
+
+# Cryptography (Libsodium)
+lazysodium = { module = "com.goterl:lazysodium-java", version.ref = "lazysodium" }
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+
+# Protocol Buffers
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+protobuf-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf" }
+
+# Logging
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+logback = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+
+# Testing
+junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit5" }
+junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit5" }
+junit-params = { module = "org.junit.jupiter:junit-jupiter-params", version.ref = "junit5" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+
+[bundles]
+coroutines = ["coroutines-core", "coroutines-swing"]
+serialization = ["serialization-json", "serialization-protobuf"]
+testing = ["junit-api", "junit-engine", "junit-params", "mockk", "coroutines-test"]
+logging = ["slf4j-api", "logback"]
+crypto = ["lazysodium", "jna"]
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+compose = { id = "org.jetbrains.compose", version.ref = "compose" }
+sqldelight = { id = "app.cash.sqldelight", version.ref = "sqldelight" }
