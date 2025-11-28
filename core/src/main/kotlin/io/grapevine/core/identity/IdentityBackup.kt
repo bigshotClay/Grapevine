@@ -7,6 +7,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.SecureRandom
@@ -22,7 +23,7 @@ import javax.crypto.spec.SecretKeySpec
  * Backups are encrypted using AES-256-GCM with a key derived from
  * a user-provided password using PBKDF2.
  *
- * ## Backup File Format
+ * ## Backup File Format (Version 1)
  * The backup file has the following structure:
  * - Magic bytes: 4 bytes ("GVBK" - Grapevine Backup)
  * - Version: 1 byte (currently version 1)
@@ -30,10 +31,22 @@ import javax.crypto.spec.SecretKeySpec
  * - IV: 12 bytes (random, for AES-GCM - standard GCM nonce size)
  * - Ciphertext: Variable length (encrypted JSON + 16-byte GCM auth tag)
  *
+ * ## Key Representation
+ * - Private key: 64 bytes - Ed25519 expanded private key (32-byte seed + 32-byte public key)
+ *   This is the format used by libsodium's crypto_sign_seed_keypair output.
+ * - Public key: 32 bytes - Ed25519 public key
+ *
  * ## Security Notes
- * - PBKDF2 with 100,000 iterations is used for key derivation
+ * - PBKDF2-HMAC-SHA256 with 100,000 iterations is used for key derivation
  * - AES-256-GCM provides authenticated encryption with 128-bit auth tag
- * - Sensitive data (keys, plaintext) is zeroed after use
+ * - Sensitive data (keys, plaintext, password chars) is zeroed after use
+ * - Note: SecretKeySpec may internally copy key bytes, so complete memory
+ *   clearing is not guaranteed. For higher security requirements, consider
+ *   using platform keystore APIs or Destroyable SecretKey implementations.
+ *
+ * ## Version Compatibility
+ * The version byte allows future format changes. When PBKDF2 parameters
+ * or encryption algorithms change, the version will be incremented.
  */
 class IdentityBackup {
     private val secureRandom = SecureRandom()
@@ -44,9 +57,10 @@ class IdentityBackup {
      * Exports an identity to an encrypted backup file.
      *
      * The file is written atomically (to a temp file first, then moved) to prevent
-     * partial writes on crash.
+     * partial writes on crash. On filesystems that don't support atomic moves,
+     * falls back to a non-atomic move.
      *
-     * @param privateKey The private key to backup (64 bytes for Ed25519 seed + public key)
+     * @param privateKey The private key to backup (64 bytes - Ed25519 expanded key)
      * @param identity The identity metadata
      * @param password User-provided password for encryption
      * @param outputFile The file to write the backup to
@@ -67,6 +81,14 @@ class IdentityBackup {
         var passwordChars: CharArray? = null
 
         try {
+            // Ensure parent directory exists
+            val parentDir = outputFile.parentFile
+            if (parentDir != null && !parentDir.exists()) {
+                if (!parentDir.mkdirs()) {
+                    throw IdentityBackupException("Failed to create directory: ${parentDir.absolutePath}")
+                }
+            }
+
             // Create backup data
             val backupData = BackupData(
                 version = BACKUP_VERSION,
@@ -98,8 +120,7 @@ class IdentityBackup {
             val ciphertext = cipher.doFinal(plaintext)
 
             // Write backup file atomically: temp file -> rename
-            outputFile.parentFile?.mkdirs()
-            val tempFile = File(outputFile.parentFile, "${outputFile.name}.tmp")
+            val tempFile = File(parentDir ?: outputFile.absoluteFile.parentFile, "${outputFile.name}.tmp")
             try {
                 tempFile.outputStream().use { out ->
                     out.write(BACKUP_MAGIC)
@@ -108,19 +129,30 @@ class IdentityBackup {
                     out.write(iv)
                     out.write(ciphertext)
                 }
-                // Atomic move to final destination
-                Files.move(
-                    tempFile.toPath(),
-                    outputFile.toPath(),
-                    StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE
-                )
+                // Try atomic move first, fall back to regular move if unsupported
+                try {
+                    Files.move(
+                        tempFile.toPath(),
+                        outputFile.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE
+                    )
+                } catch (e: AtomicMoveNotSupportedException) {
+                    logger.debug("Atomic move not supported, falling back to regular move")
+                    Files.move(
+                        tempFile.toPath(),
+                        outputFile.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING
+                    )
+                }
             } catch (e: Exception) {
                 tempFile.delete() // Clean up temp file on failure
                 throw e
             }
 
             logger.info("Identity backup created successfully")
+        } catch (e: IdentityBackupException) {
+            throw e
         } catch (e: Exception) {
             logger.error("Failed to create identity backup", e)
             throw IdentityBackupException("Failed to create backup", e)
