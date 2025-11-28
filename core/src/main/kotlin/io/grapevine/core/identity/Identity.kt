@@ -1,5 +1,6 @@
 package io.grapevine.core.identity
 
+import io.grapevine.core.serialization.ByteArraySerializer
 import kotlinx.serialization.Serializable
 import java.util.Base64
 
@@ -14,6 +15,7 @@ import java.util.Base64
  */
 @Serializable
 data class Identity(
+    @Serializable(with = ByteArraySerializer::class)
     val publicKey: ByteArray,
     val displayName: String? = null,
     val avatarHash: String? = null,
@@ -34,7 +36,7 @@ data class Identity(
         get() = publicKeyBase64.take(8)
 
     init {
-        require(publicKey.size == 32) { "Public key must be 32 bytes" }
+        require(publicKey.size == PUBLIC_KEY_SIZE) { "Public key must be $PUBLIC_KEY_SIZE bytes" }
         require(displayName == null || displayName.length <= MAX_DISPLAY_NAME_LENGTH) {
             "Display name must be at most $MAX_DISPLAY_NAME_LENGTH characters"
         }

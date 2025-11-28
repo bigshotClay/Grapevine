@@ -1,6 +1,7 @@
 package io.grapevine.core.identity
 
 import io.grapevine.core.crypto.CryptoProvider
+import io.grapevine.core.serialization.ByteArraySerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -119,8 +120,8 @@ class IdentityBackup(
                 throw IdentityBackupException("Invalid backup file: bad magic bytes")
             }
 
-            // Read version
-            val version = data[BACKUP_MAGIC.size].toInt()
+            // Read version (mask to unsigned byte)
+            val version = data[BACKUP_MAGIC.size].toInt() and 0xFF
             if (version != BACKUP_VERSION) {
                 throw IdentityBackupException("Unsupported backup version: $version")
             }
@@ -209,9 +210,9 @@ class IdentityBackup(
 @Serializable
 data class BackupData(
     val version: Int,
-    @Serializable(with = ByteArraySerializer::class)
+    @Serializable(with = io.grapevine.core.serialization.ByteArraySerializer::class)
     val privateKey: ByteArray,
-    @Serializable(with = ByteArraySerializer::class)
+    @Serializable(with = io.grapevine.core.serialization.ByteArraySerializer::class)
     val publicKey: ByteArray,
     val displayName: String? = null,
     val avatarHash: String? = null,
@@ -257,24 +258,6 @@ data class BackupData(
         result = 31 * result + (bio?.hashCode() ?: 0)
         result = 31 * result + createdAt.hashCode()
         return result
-    }
-}
-
-/**
- * Custom serializer for ByteArray to Base64.
- */
-object ByteArraySerializer : kotlinx.serialization.KSerializer<ByteArray> {
-    override val descriptor = kotlinx.serialization.descriptors.PrimitiveSerialDescriptor(
-        "ByteArray",
-        kotlinx.serialization.descriptors.PrimitiveKind.STRING
-    )
-
-    override fun serialize(encoder: kotlinx.serialization.encoding.Encoder, value: ByteArray) {
-        encoder.encodeString(java.util.Base64.getEncoder().encodeToString(value))
-    }
-
-    override fun deserialize(decoder: kotlinx.serialization.encoding.Decoder): ByteArray {
-        return java.util.Base64.getDecoder().decode(decoder.decodeString())
     }
 }
 

@@ -3,10 +3,12 @@ package io.grapevine.core.identity
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.security.KeyStore
+import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * JVM implementation of SecureStorage using Java KeyStore.
@@ -53,9 +55,10 @@ class JvmSecureStorage(
             val encryptedData = cipher.doFinal(value)
 
             // Store IV + encrypted data as a secret key entry
+            // Using "AES" algorithm identifier for compatibility
             val combined = iv + encryptedData
             val entry = KeyStore.SecretKeyEntry(
-                javax.crypto.spec.SecretKeySpec(combined, "RAW")
+                SecretKeySpec(combined, "AES")
             )
             keystore.setEntry(
                 "${key}_data",
@@ -136,7 +139,13 @@ class JvmSecureStorage(
             entry.secretKey
         } else {
             val keyGen = KeyGenerator.getInstance("AES")
-            keyGen.init(256)
+            // Try 256-bit key, fall back to 128-bit if not available
+            try {
+                keyGen.init(256)
+            } catch (e: Exception) {
+                logger.warn("256-bit AES not available, falling back to 128-bit")
+                keyGen.init(128)
+            }
             val newKey = keyGen.generateKey()
             keystore.setEntry(
                 alias,
@@ -170,19 +179,27 @@ class JvmSecureStorage(
     private fun getOrCreateKeystorePassword(): CharArray {
         // Use a machine-specific password derived from system properties
         // This provides some protection while not requiring user input
-        val machineId = getMachineIdentifier()
+        // Note: For production use, consider integrating with OS-native secure storage
+        // (Windows Credential Manager, macOS Keychain, Linux Secret Service)
+        val machineId = deriveMachineIdentifier()
         return machineId.toCharArray()
     }
 
-    private fun getMachineIdentifier(): String {
-        // Create a semi-unique identifier for this machine
+    private fun deriveMachineIdentifier(): String {
+        // Create a semi-unique identifier for this machine using SHA-256
         val osName = System.getProperty("os.name", "unknown")
         val userName = System.getProperty("user.name", "unknown")
         val userHome = System.getProperty("user.home", "unknown")
 
-        // Hash these values to create a consistent password
-        val input = "$osName:$userName:$userHome:grapevine-keystore"
-        return input.hashCode().toString(16).padStart(16, '0')
+        // Use SHA-256 for cryptographically secure derivation
+        val input = "$osName:$userName:$userHome:grapevine-keystore-v1"
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(input.toByteArray(Charsets.UTF_8))
+        return hash.toHexString()
+    }
+
+    private fun ByteArray.toHexString(): String {
+        return joinToString("") { "%02x".format(it) }
     }
 
     companion object {
