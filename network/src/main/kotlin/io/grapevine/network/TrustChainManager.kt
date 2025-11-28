@@ -16,6 +16,8 @@ import org.slf4j.LoggerFactory
  * Block types used in Grapevine.
  */
 object BlockTypes {
+    /** Genesis block marking the first user who bootstrapped the network */
+    const val GENESIS = "grapevine_genesis"
     const val INVITE = "grapevine_invite"
     const val POST = "grapevine_post"
     const val FOLLOW = "grapevine_follow"
@@ -40,6 +42,71 @@ class TrustChainManager(
         setupValidators()
         setupBlockSigners()
         setupBlockListeners()
+    }
+
+    /**
+     * Creates a genesis block marking this user as the network founder.
+     *
+     * The genesis block is a self-signed block that establishes the user as
+     * the root of the trust chain. Only one genesis block should exist per network.
+     *
+     * This method checks for an existing genesis block before creating a new one.
+     * If a genesis block already exists locally, this method returns null to
+     * prevent creating multiple genesis blocks.
+     *
+     * @param displayName Optional display name for the genesis user
+     * @return The created block, or null if creation failed or genesis already exists
+     */
+    fun createGenesisBlock(displayName: String? = null): TrustChainBlock? {
+        val community = trustChain ?: return null
+
+        // Prevent creating multiple genesis blocks
+        if (hasGenesisBlock()) {
+            logger.warn("Cannot create genesis block: one already exists")
+            return null
+        }
+
+        val transaction = mutableMapOf<String, Any?>(
+            "timestamp" to System.currentTimeMillis(),
+            "version" to 1
+        )
+        if (displayName != null) {
+            transaction["display_name"] = displayName
+        }
+
+        // Genesis block is self-signed (proposal to self)
+        return community.createProposalBlock(
+            BlockTypes.GENESIS,
+            transaction,
+            community.myPeer.publicKey.keyToBin()
+        )
+    }
+
+    /**
+     * Checks if a genesis block exists in the local chain.
+     *
+     * This checks for any block of type [BlockTypes.GENESIS] in the local
+     * TrustChain database, including blocks received from peers.
+     *
+     * @return true if a genesis block exists locally, false otherwise
+     */
+    fun hasGenesisBlock(): Boolean {
+        val blocks = getBlocksByType(BlockTypes.GENESIS)
+        return blocks.isNotEmpty()
+    }
+
+    /**
+     * Gets the genesis block if it exists in the local chain.
+     *
+     * If multiple genesis blocks exist (which would indicate a network problem),
+     * this returns the first one found. In a healthy network, there should only
+     * be one genesis block.
+     *
+     * @return The genesis block, or null if none exists locally
+     */
+    fun getGenesisBlock(): TrustChainBlock? {
+        val blocks = getBlocksByType(BlockTypes.GENESIS)
+        return blocks.firstOrNull()
     }
 
     /**
@@ -219,6 +286,32 @@ class TrustChainManager(
     private fun setupValidators() {
         val community = trustChain ?: return
 
+        // Validate genesis blocks
+        community.registerTransactionValidator(BlockTypes.GENESIS, object : TransactionValidator {
+            override fun validate(block: TrustChainBlock, database: TrustChainStore): ValidationResult {
+                // Agreement blocks are auto-generated responses and validated separately
+                if (block.isAgreement) {
+                    return ValidationResult.Valid
+                }
+
+                // Genesis blocks must have a timestamp
+                val hasTimestamp = block.transaction["timestamp"] != null
+                if (!hasTimestamp) {
+                    return ValidationResult.Invalid(listOf("Genesis block must have a timestamp"))
+                }
+
+                // Genesis blocks are self-signed (public key equals link public key)
+                // This means the block creator is proposing to themselves, establishing
+                // them as the network founder
+                val isSelfSigned = block.publicKey.contentEquals(block.linkPublicKey)
+                if (!isSelfSigned) {
+                    return ValidationResult.Invalid(listOf("Genesis block must be self-signed"))
+                }
+
+                return ValidationResult.Valid
+            }
+        })
+
         // Validate post blocks
         community.registerTransactionValidator(BlockTypes.POST, object : TransactionValidator {
             override fun validate(block: TrustChainBlock, database: TrustChainStore): ValidationResult {
@@ -298,6 +391,13 @@ class TrustChainManager(
     private fun setupBlockListeners() {
         val community = trustChain ?: return
 
+        community.addListener(BlockTypes.GENESIS, object : BlockListener {
+            override fun onBlockReceived(block: TrustChainBlock) {
+                logger.info("Received genesis block: ${block.blockId}")
+                blockListeners.forEach { it.onGenesisReceived(block) }
+            }
+        })
+
         community.addListener(BlockTypes.POST, object : BlockListener {
             override fun onBlockReceived(block: TrustChainBlock) {
                 logger.debug("Received post block: ${block.blockId}")
@@ -337,6 +437,7 @@ class TrustChainManager(
      * Listener interface for Grapevine-specific blocks.
      */
     interface GrapevineBlockListener {
+        fun onGenesisReceived(block: TrustChainBlock) {}
         fun onPostReceived(block: TrustChainBlock) {}
         fun onInviteReceived(block: TrustChainBlock) {}
         fun onFollowReceived(block: TrustChainBlock) {}

@@ -6,6 +6,18 @@ Grapevine is a decentralized, peer-to-peer social media platform built on IPv8 o
 
 ## Development Workflow
 
+### Session Rules
+
+**IMPORTANT: Complete only ONE feature/issue per session.**
+
+1. At the start of each session, check the "Current Progress" section below
+2. Work on the next incomplete item only
+3. When finished with the feature:
+   - Ensure tests pass
+   - Update the "Current Progress" section to mark the item complete
+   - Stop and wait for the next session
+4. Do NOT continue to the next feature in the same session
+
 ### Working on Epics
 
 When working on an epic, **complete one child issue at a time** in the order specified:
@@ -23,6 +35,26 @@ This ensures:
 - Each feature builds on the previous one correctly
 - Dependencies between issues are respected
 - Code review is manageable with atomic, focused changes
+
+## Current Progress
+
+Track completed work here to avoid repeating effort across sessions.
+
+### Epic 3: Invitation System (In Progress)
+- [x] #26 - Implement genesis user bootstrap mechanism
+  - Added `is_genesis` column to identity table
+  - Added `GENESIS` block type to TrustChainManager
+  - Created `GenesisManager` class with `GenesisStorage` interface
+  - Created `InMemoryGenesisStorage` for testing
+  - Added `GenesisInfo`, `GenesisResult`, `ValidationResult` data classes
+- [ ] #22 - FR-4: Invite Generation - Generate invite tokens
+- [ ] #23 - FR-5: Invite Acceptance - Redeem invites and counter-sign
+- [ ] #24 - FR-6: Invite Chain Recording - Record invites in distributed chain
+- [ ] #25 - FR-7: Invite Tracing - View complete invite chain to genesis
+
+### Completed Epics
+- [x] Epic 1: Project Foundation & Infrastructure (#11-#17)
+- [x] Epic 2: Identity Management (#18-#23)
 
 ## Technology Stack
 
@@ -105,6 +137,18 @@ Before approving a PR, reviewers should verify:
    - TrustChain block creation and validation
    - Database operations
 3. **Security Tests**: Verify cryptographic operations and signature validation
+
+### Testing Limitations
+
+**TrustChainManager**: Unit testing `TrustChainManager` methods (e.g., `createGenesisBlock`, validators) requires mocking the complex IPv8/TrustChain components (`TrustChainCommunity`, `TrustChainStore`, `Peer`). This is non-trivial because:
+- `TrustChainCommunity` is tightly coupled to the IPv8 network stack
+- Block creation requires a running community with valid peer keys
+- Validators receive real `TrustChainBlock` instances that are difficult to construct in isolation
+
+For now, TrustChainManager functionality should be verified through:
+- Manual integration testing with a running IPv8 instance
+- End-to-end tests when the full application stack is available
+- Future: Consider creating a `TrustChainTestHelper` with mock implementations
 
 ## Branch Strategy
 

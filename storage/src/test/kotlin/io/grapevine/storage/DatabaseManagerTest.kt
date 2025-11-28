@@ -36,6 +36,7 @@ class DatabaseManagerTest {
             display_name = "Test User",
             avatar_hash = null,
             is_local = 1L,
+            is_genesis = 0L,
             created_at = now,
             updated_at = now
         )
@@ -59,8 +60,8 @@ class DatabaseManagerTest {
         val now = System.currentTimeMillis()
 
         // Create two identities
-        db.identityQueries.insert("user-1", "key1".toByteArray(), "User 1", null, 1L, now, now)
-        db.identityQueries.insert("user-2", "key2".toByteArray(), "User 2", null, 0L, now, now)
+        db.identityQueries.insert("user-1", "key1".toByteArray(), "User 1", null, 1L, 0L, now, now)
+        db.identityQueries.insert("user-2", "key2".toByteArray(), "User 2", null, 0L, 0L, now, now)
 
         // Create follow relationship
         db.followRelationshipQueries.insert(
@@ -158,5 +159,147 @@ class DatabaseManagerTest {
         assertNotNull(metadata)
         assertEquals(1L, metadata?.is_complete)
         assertEquals(2L, metadata?.chunks_available)
+    }
+
+    // ==================== Genesis Identity Tests ====================
+
+    @Test
+    fun `hasGenesis returns false when no genesis exists`() {
+        val db = dbManager.openInMemory()
+
+        val hasGenesis = db.identityQueries.hasGenesis().executeAsOne()
+        assertFalse(hasGenesis)
+    }
+
+    @Test
+    fun `hasGenesis returns true after setGenesis`() {
+        val db = dbManager.openInMemory()
+        val now = System.currentTimeMillis()
+
+        // Create an identity
+        db.identityQueries.insert(
+            id = "genesis-user",
+            public_key = "genesis-public-key".toByteArray(),
+            display_name = "Genesis User",
+            avatar_hash = null,
+            is_local = 1L,
+            is_genesis = 0L,
+            created_at = now,
+            updated_at = now
+        )
+
+        // Mark as genesis
+        db.identityQueries.setGenesis(now, "genesis-user")
+
+        val hasGenesis = db.identityQueries.hasGenesis().executeAsOne()
+        assertTrue(hasGenesis)
+    }
+
+    @Test
+    fun `getGenesis returns the genesis identity`() {
+        val db = dbManager.openInMemory()
+        val now = System.currentTimeMillis()
+
+        // Create a genesis identity
+        db.identityQueries.insert(
+            id = "genesis-user",
+            public_key = "genesis-public-key".toByteArray(),
+            display_name = "Genesis User",
+            avatar_hash = null,
+            is_local = 1L,
+            is_genesis = 1L,
+            created_at = now,
+            updated_at = now
+        )
+
+        val genesis = db.identityQueries.getGenesis().executeAsOneOrNull()
+        assertNotNull(genesis)
+        assertEquals("genesis-user", genesis?.id)
+        assertEquals("Genesis User", genesis?.display_name)
+        assertEquals(1L, genesis?.is_genesis)
+    }
+
+    @Test
+    fun `clearAllGenesis clears existing genesis flags`() {
+        val db = dbManager.openInMemory()
+        val now = System.currentTimeMillis()
+
+        // Create two identities, both marked as genesis (simulating bad state)
+        db.identityQueries.insert(
+            id = "user-1",
+            public_key = "key1".toByteArray(),
+            display_name = "User 1",
+            avatar_hash = null,
+            is_local = 1L,
+            is_genesis = 1L,
+            created_at = now,
+            updated_at = now
+        )
+        db.identityQueries.insert(
+            id = "user-2",
+            public_key = "key2".toByteArray(),
+            display_name = "User 2",
+            avatar_hash = null,
+            is_local = 0L,
+            is_genesis = 1L,
+            created_at = now,
+            updated_at = now
+        )
+
+        // Clear all genesis flags
+        db.identityQueries.clearAllGenesis(now + 1000)
+
+        // Verify no genesis exists
+        val hasGenesis = db.identityQueries.hasGenesis().executeAsOne()
+        assertFalse(hasGenesis)
+
+        // Verify both identities have is_genesis = 0
+        val user1 = db.identityQueries.getById("user-1").executeAsOneOrNull()
+        val user2 = db.identityQueries.getById("user-2").executeAsOneOrNull()
+        assertEquals(0L, user1?.is_genesis)
+        assertEquals(0L, user2?.is_genesis)
+    }
+
+    @Test
+    fun `setGenesis after clearAllGenesis ensures single genesis`() {
+        val db = dbManager.openInMemory()
+        val now = System.currentTimeMillis()
+
+        // Create two identities
+        db.identityQueries.insert(
+            id = "user-1",
+            public_key = "key1".toByteArray(),
+            display_name = "User 1",
+            avatar_hash = null,
+            is_local = 1L,
+            is_genesis = 1L, // Start as genesis
+            created_at = now,
+            updated_at = now
+        )
+        db.identityQueries.insert(
+            id = "user-2",
+            public_key = "key2".toByteArray(),
+            display_name = "User 2",
+            avatar_hash = null,
+            is_local = 0L,
+            is_genesis = 0L,
+            created_at = now,
+            updated_at = now
+        )
+
+        // Clear all genesis and set user-2 as new genesis
+        val updateTime = now + 1000
+        db.identityQueries.clearAllGenesis(updateTime)
+        db.identityQueries.setGenesis(updateTime, "user-2")
+
+        // Verify only user-2 is genesis
+        val user1 = db.identityQueries.getById("user-1").executeAsOneOrNull()
+        val user2 = db.identityQueries.getById("user-2").executeAsOneOrNull()
+        assertEquals(0L, user1?.is_genesis)
+        assertEquals(1L, user2?.is_genesis)
+
+        // Verify getGenesis returns user-2
+        val genesis = db.identityQueries.getGenesis().executeAsOneOrNull()
+        assertEquals("user-2", genesis?.id)
     }
 }

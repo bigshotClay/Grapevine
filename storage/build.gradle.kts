@@ -9,6 +9,9 @@ sqldelight {
     databases {
         create("GrapevineDatabase") {
             packageName.set("io.grapevine.storage.db")
+            // Schema version 2: Added is_genesis column to identity table
+            version = 2
+            deriveSchemaFromMigrations.set(false)
         }
     }
 }
