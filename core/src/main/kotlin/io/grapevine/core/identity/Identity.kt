@@ -266,6 +266,11 @@ class Identity private constructor(
         /**
          * Normalizes text: NFC normalization and trim whitespace.
          * Returns null if result is empty.
+         *
+         * Note: Uses Kotlin's [String.trim] which removes characters where
+         * [Character.isWhitespace] returns true. This includes standard ASCII
+         * whitespace but NOT non-breaking space (U+00A0). If non-breaking spaces
+         * need to be trimmed, callers should pre-process input.
          */
         private fun normalizeText(text: String): String? {
             val normalized = Normalizer.normalize(text, Normalizer.Form.NFC).trim()
@@ -274,10 +279,16 @@ class Identity private constructor(
 
         /**
          * Validates that text contains no control characters.
+         * Throws with details about the offending character for easier debugging.
          */
         private fun requireNoControlChars(text: String, fieldName: String) {
-            require(!CONTROL_CHAR_PATTERN.containsMatchIn(text)) {
-                "$fieldName contains invalid control characters"
+            val match = CONTROL_CHAR_PATTERN.find(text)
+            if (match != null) {
+                val codePoint = match.value.codePointAt(0)
+                val hex = codePoint.toString(16).uppercase().padStart(4, '0')
+                throw IllegalArgumentException(
+                    "$fieldName contains invalid control character U+$hex at index ${match.range.first}"
+                )
             }
         }
 
