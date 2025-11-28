@@ -8,7 +8,7 @@ import java.util.Base64
 
 class IdentityTest {
 
-    private val validAvatarHash = "a".repeat(64) // 64 hex chars for SHA-256
+    private val validAvatarHash = "a".repeat(64) // 64 lowercase hex chars for SHA-256
 
     @Test
     fun `create identity with valid public key`() {
@@ -290,7 +290,9 @@ class IdentityTest {
         val str = identity.toString()
 
         assertTrue(str.contains(shortBio))
-        assertFalse(str.contains("..."))
+        // Note: toString now includes "..." for avatarHash truncation even when null
+        // so we check that bio itself doesn't have "..." appended
+        assertTrue(str.contains("bio=$shortBio,") || str.contains("bio=$shortBio)"))
     }
 
     // ==================== Validation Tests ====================
@@ -350,12 +352,12 @@ class IdentityTest {
     }
 
     @Test
-    fun `accept uppercase avatar hash`() {
+    fun `uppercase avatar hash is lowercased`() {
         val publicKey = ByteArray(32)
-        val validHash = "ABCDEF0123456789".repeat(4) // 64 hex chars
+        val upperHash = "ABCDEF0123456789".repeat(4) // 64 hex chars
 
-        val identity = Identity(publicKey = publicKey, avatarHash = validHash)
-        assertEquals(validHash, identity.avatarHash)
+        val identity = Identity(publicKey = publicKey, avatarHash = upperHash)
+        assertEquals(upperHash.lowercase(), identity.avatarHash)
     }
 
     @Test
@@ -384,6 +386,113 @@ class IdentityTest {
         val identity = Identity(publicKey = publicKey, bio = "")
 
         assertNull(identity.bio)
+    }
+
+    // ==================== Control Character Tests ====================
+
+    @Test
+    fun `reject display name with control characters`() {
+        val publicKey = ByteArray(32)
+
+        // Null character
+        assertThrows<IllegalArgumentException> {
+            Identity(publicKey = publicKey, displayName = "Test\u0000Name")
+        }
+
+        // Bell character
+        assertThrows<IllegalArgumentException> {
+            Identity(publicKey = publicKey, displayName = "Test\u0007Name")
+        }
+
+        // Newline is a control character
+        assertThrows<IllegalArgumentException> {
+            Identity(publicKey = publicKey, displayName = "Test\nName")
+        }
+    }
+
+    @Test
+    fun `bio validates by unicode codepoints`() {
+        val publicKey = ByteArray(32)
+        // Emoji that takes 2 chars in UTF-16 but is 1 codepoint
+        val emoji = "\uD83D\uDE00" // 😀
+        val bioWithEmoji = emoji.repeat(Identity.MAX_BIO_LENGTH)
+
+        // This should work - 500 codepoints even though more chars
+        val identity = Identity(publicKey = publicKey, bio = bioWithEmoji)
+        assertEquals(bioWithEmoji, identity.bio)
+    }
+
+    @Test
+    fun `reject bio exceeding max codepoints`() {
+        val publicKey = ByteArray(32)
+        val emoji = "\uD83D\uDE00" // 😀 - 1 codepoint, 2 chars
+        val longBio = emoji.repeat(Identity.MAX_BIO_LENGTH + 1)
+
+        assertThrows<IllegalArgumentException> {
+            Identity(publicKey = publicKey, bio = longBio)
+        }
+    }
+
+    @Test
+    fun `display name is NFC normalized`() {
+        val publicKey = ByteArray(32)
+        // é as e + combining acute accent (NFD form)
+        val nfdName = "cafe\u0301"
+        val identity = Identity(publicKey = publicKey, displayName = nfdName)
+
+        // Should be NFC normalized (precomposed é)
+        assertEquals("café", identity.displayName)
+    }
+
+    // ==================== Copy Immutability Tests ====================
+
+    @Test
+    fun `copy returns independent public key array`() {
+        val publicKey = ByteArray(32) { it.toByte() }
+        val identity = Identity(publicKey = publicKey, displayName = "Alice")
+
+        val copied = identity.copy()
+        val copiedKey = copied.publicKey
+        copiedKey[0] = 0xFF.toByte()
+
+        // Original identity should be unchanged
+        assertEquals(0.toByte(), identity.publicKey[0])
+        // Copied identity should also be unchanged (we mutated the returned copy)
+        assertEquals(0.toByte(), copied.publicKey[0])
+    }
+
+    @Test
+    fun `copy with new public key is independent`() {
+        val publicKey1 = ByteArray(32) { it.toByte() }
+        val publicKey2 = ByteArray(32) { (it + 100).toByte() }
+        val identity = Identity(publicKey = publicKey1, displayName = "Alice")
+
+        val copied = identity.copy(publicKey = publicKey2)
+
+        // Mutate original array
+        publicKey2[0] = 0xFF.toByte()
+
+        // Copied identity should be unchanged
+        assertEquals(100.toByte(), copied.publicKey[0])
+    }
+
+    // ==================== fromPublicKeyBase64 Tests ====================
+
+    @Test
+    fun `fromPublicKeyBase64 rejects invalid length`() {
+        val shortKey = ByteArray(16)
+        val base64 = Base64.getEncoder().encodeToString(shortKey)
+
+        assertThrows<IllegalArgumentException> {
+            Identity.fromPublicKeyBase64(base64)
+        }
+    }
+
+    @Test
+    fun `fromPublicKeyBase64 rejects invalid base64`() {
+        assertThrows<IllegalArgumentException> {
+            Identity.fromPublicKeyBase64("not-valid-base64!!!")
+        }
     }
 
     // ==================== Serialization Tests ====================
