@@ -136,11 +136,12 @@ class IdentityBackupTest {
         val keyPair = cryptoProvider.generateSigningKeyPair()
         val privateKey = keyPair.secretKey.asBytes
         val publicKey = keyPair.publicKey.asBytes
+        val validAvatarHash = "a".repeat(64) // Valid 64-char hex string
 
         val identity = Identity(
             publicKey = publicKey,
             displayName = "Alice",
-            avatarHash = "abc123hash",
+            avatarHash = validAvatarHash,
             bio = "Hello, I'm Alice!",
             createdAt = 9876543210L
         )

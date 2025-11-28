@@ -252,13 +252,15 @@ data class Profile(
     val bio: String?
 ) {
     /**
-     * Returns the public key as a Base64-encoded string.
+     * Returns the public key as a URL-safe Base64-encoded string (no padding).
+     * Matches the encoding used by [Identity.publicKeyBase64].
      */
     val publicKeyBase64: String
-        get() = java.util.Base64.getEncoder().encodeToString(publicKey)
+        get() = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(publicKey)
 
     /**
      * Returns a short identifier derived from the public key.
+     * URL-safe and matches [Identity.shortId].
      */
     val shortId: String
         get() = publicKeyBase64.take(8)

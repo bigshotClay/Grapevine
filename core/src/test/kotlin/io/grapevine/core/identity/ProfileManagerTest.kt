@@ -203,25 +203,27 @@ class ProfileManagerTest {
 
     @Test
     fun `createIdentityWithProfile creates identity with profile fields`() {
+        val validHash = "a".repeat(64) // Valid SHA-256 hex hash
         profileManager.setDisplayName("Alice")
-        profileManager.setAvatarHash("hash123")
+        profileManager.setAvatarHash(validHash)
         profileManager.setBio("Hello!")
 
         val identity = profileManager.createIdentityWithProfile()
 
         assertEquals("Alice", identity.displayName)
-        assertEquals("hash123", identity.avatarHash)
+        assertEquals(validHash, identity.avatarHash)
         assertEquals("Hello!", identity.bio)
         assertArrayEquals(identityManager.getPublicKey(), identity.publicKey)
     }
 
     @Test
     fun `loadFromIdentity loads profile data`() {
+        val validHash = "b".repeat(64) // Valid SHA-256 hex hash
         val publicKey = identityManager.getPublicKey()
         val identity = Identity(
             publicKey = publicKey,
             displayName = "Bob",
-            avatarHash = "bobhash",
+            avatarHash = validHash,
             bio = "I'm Bob"
         )
 
@@ -229,7 +231,7 @@ class ProfileManagerTest {
 
         val profile = profileManager.getProfile()
         assertEquals("Bob", profile.displayName)
-        assertEquals("bobhash", profile.avatarHash)
+        assertEquals(validHash, profile.avatarHash)
         assertEquals("I'm Bob", profile.bio)
     }
 
