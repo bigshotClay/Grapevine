@@ -55,15 +55,17 @@ Track completed work here to avoid repeating effort across sessions.
   - Added shareable token format: `grapevine://invite/{code}#{publicKey}#{signature}`
   - Full test coverage for token lifecycle
 - [x] #23 - FR-5: Invite Acceptance - Redeem invites and counter-sign
-  - Created `InviteAcceptance` class for tracking accepted invites with counter-signature
-  - Created `InviteAcceptanceResult` sealed class for acceptance outcomes
-  - Created `InviteAcceptanceStorage` interface and `InMemoryInviteAcceptanceStorage` implementation
-  - Added `acceptInvite()` method to accept invites from shareable strings
-  - Added `acceptInviteFromStorage()` method for local token acceptance
-  - Implemented counter-signature generation for invitee
-  - Added verification for self-invite and duplicate acceptance prevention
-  - Added query methods: `getMyInvite()`, `getMyInvitees()`, `hasBeenInvited()`
-  - Full test coverage for acceptance flow
+  - Implemented `InviteAcceptance` data model and `InviteAcceptanceResult` outcomes
+  - Added `InviteAcceptanceStorage` interface and `InMemoryInviteAcceptanceStorage` (testing only)
+  - Thread-safety via `ReentrantReadWriteLock`; defensive deep-copying of `ByteArray` fields on save/read
+  - Added acceptance flow: `acceptInvite()`, `acceptInviteFromStorage()`, counter-signature generation/verification
+  - Prevention for self-invite and duplicate acceptance
+  - Query methods: `getMyInvite()` (returns most recent by `acceptedAt`), `getMyInvitees()`, `hasBeenInvited()`
+  - Unit/integration tests: token parsing, signature verification, duplicate handling, defensive copy behavior
+  - **Engineering notes**: `InMemoryInviteAcceptanceStorage` is for tests only; uses O(n) scans for queries.
+    `InviteAcceptance.copy()` performs deep copy of all `ByteArray` fields. Production storage requires
+    SQLDelight-backed implementation.
+  - **TODO**: Implement persistent `InviteAcceptanceStorage` backed by SQLDelight `invite_acceptance` table
 - [ ] #24 - FR-6: Invite Chain Recording - Record invites in distributed chain
 - [ ] #25 - FR-7: Invite Tracing - View complete invite chain to genesis
 
@@ -198,6 +200,61 @@ grapevine/
 - Content integrity verified against stored hashes
 - No encryption on content chains (transparency is a core principle)
 - Block signatures verified before processing
+
+### Security Checklist for PRs
+
+- [ ] Validate and sanitize input strings before parsing (e.g., shareable invite strings)
+- [ ] Signature verification uses constant-time comparison (avoid timing attacks)
+- [ ] No logging of raw secrets, private keys, or full tokens (mask sensitive data in logs)
+- [ ] Sensitive byte arrays are zeroed/cleared after use where possible
+- [ ] Signature algorithm and key formats are explicitly documented
+- [ ] Tests cover malformed signatures and replay/duplicate attempts
+
+## Code Quality Standards
+
+### PR Quality Checklist
+
+- [ ] All public types have KDoc documentation
+- [ ] Mutable byte arrays are deep-copied on write/read (avoid shared-mutable state)
+- [ ] Deterministic behavior documented for methods returning single elements
+- [ ] Unit tests cover happy path, edge cases, malformed input, and concurrent access
+- [ ] Security checklist satisfied (see above)
+
+### PR Content Guidelines
+
+- PR title should include issue number and short description (e.g., `feat: Implement feature X (#123)`)
+- PR body must list: changes made, testing performed, security implications, migration notes
+- Link related issues and describe tests added
+
+## Kotlin Implementation Guidelines
+
+### ByteArray Handling
+
+- `ByteArray` fields in data classes are mutable; Kotlin's `copy()` is shallow
+- **Always deep-copy** `ByteArray` fields when storing or returning: use `.copyOf()`
+- Consider using immutable wrappers (e.g., `okio.ByteString`) for public APIs to prevent accidental mutation
+- Custom `copy()` methods should explicitly clone all `ByteArray` fields
+
+### Deterministic Behavior
+
+- Methods returning a single element from collections should use deterministic selection
+- Use `maxByOrNull { timestamp }` or explicit sorting rather than `find {}` or `first()`
+- Document the selection criteria in KDoc (e.g., "returns the most recent by `acceptedAt`")
+
+### Thread Safety
+
+- In-memory storage implementations must be thread-safe
+- Use `ReentrantReadWriteLock` with `kotlin.concurrent.read/write` extensions
+- Document thread-safety guarantees in class KDoc
+
+### Testing Requirements
+
+Required test categories for storage and crypto code:
+- Unit tests for parsing (including malformed input)
+- Defensive copy tests (mutating returned `ByteArray` does not affect storage)
+- Concurrency tests (concurrent save/read/delete scenarios)
+- Integration tests for persistent storage (SQLDelight)
+- Signature verification edge cases (invalid signatures, wrong keys)
 
 ## Getting Help
 
