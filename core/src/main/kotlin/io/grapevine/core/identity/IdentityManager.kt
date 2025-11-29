@@ -366,6 +366,98 @@ class IdentityManager(
     }
 
     /**
+     * Previews the identity from a backup file without importing it.
+     * Useful for checking what identity would be restored before committing.
+     *
+     * @param backupFile The backup file to preview
+     * @param password The password used to encrypt the backup
+     * @return The identity from the backup file
+     * @throws IdentityBackupException if decryption fails or backup is corrupted
+     */
+    fun previewBackup(backupFile: java.io.File, password: String): Identity {
+        val backupData = identityBackup.importBackup(backupFile, password)
+        try {
+            return backupData.toIdentity()
+        } finally {
+            backupData.privateKey.fill(0)
+        }
+    }
+
+    /**
+     * Checks if importing a backup would conflict with an existing identity.
+     *
+     * @param backupFile The backup file to check
+     * @param password The password used to encrypt the backup
+     * @return An [ImportResult.Conflict] if there's a conflict, [ImportResult.Success] with a
+     *         preview identity if no conflict, or [ImportResult.Error] if preview failed
+     */
+    fun checkImportConflict(backupFile: java.io.File, password: String): ImportResult {
+        return try {
+            val backupIdentity = previewBackup(backupFile, password)
+
+            if (hasIdentity()) {
+                val existingIdentity = getIdentity()
+                // Check if they're the same identity (same public key)
+                if (existingIdentity.publicKey.contentEquals(backupIdentity.publicKey)) {
+                    // Same identity, no conflict - importing would just refresh
+                    ImportResult.Success(backupIdentity)
+                } else {
+                    ImportResult.Conflict(existingIdentity, backupIdentity)
+                }
+            } else {
+                // No existing identity, no conflict
+                ImportResult.Success(backupIdentity)
+            }
+        } catch (e: IdentityBackupException) {
+            ImportResult.Error(e.message ?: "Failed to read backup", e)
+        } catch (e: Exception) {
+            ImportResult.Error("Unexpected error: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Imports an identity from an encrypted backup file with conflict handling.
+     *
+     * If [force] is false (default) and an existing identity would be overwritten,
+     * returns [ImportResult.Conflict] instead of performing the import.
+     *
+     * If [force] is true, any existing identity is replaced regardless of conflict.
+     *
+     * @param backupFile The backup file to import
+     * @param password The password used to encrypt the backup
+     * @param force If true, overwrite existing identity without conflict check
+     * @return [ImportResult] indicating success, conflict, or error
+     */
+    fun importBackupSafe(
+        backupFile: java.io.File,
+        password: String,
+        force: Boolean = false
+    ): ImportResult {
+        return try {
+            // If not forcing, check for conflicts first
+            if (!force) {
+                val conflictCheck = checkImportConflict(backupFile, password)
+                if (conflictCheck is ImportResult.Conflict) {
+                    return conflictCheck
+                }
+                if (conflictCheck is ImportResult.Error) {
+                    return conflictCheck
+                }
+            }
+
+            // Proceed with import
+            val identity = importBackup(backupFile, password)
+            ImportResult.Success(identity)
+        } catch (e: IdentityBackupException) {
+            ImportResult.Error(e.message ?: "Failed to import backup", e)
+        } catch (e: IdentityException) {
+            ImportResult.Error(e.message ?: "Failed to store identity", e)
+        } catch (e: Exception) {
+            ImportResult.Error("Unexpected error: ${e.message}", e)
+        }
+    }
+
+    /**
      * Closes this manager and clears all sensitive data from memory.
      *
      * After calling this method, the manager can still be used - it will
@@ -381,3 +473,36 @@ class IdentityManager(
  * Exception thrown when identity operations fail.
  */
 class IdentityException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/**
+ * Result of an identity import operation.
+ *
+ * Use [ImportResult.Success] to check if import succeeded and get the identity.
+ * Use [ImportResult.Conflict] to handle cases where an existing identity would be overwritten.
+ * Use [ImportResult.Error] to handle import failures.
+ */
+sealed class ImportResult {
+    /**
+     * Import succeeded. The [identity] is now the active identity.
+     */
+    data class Success(val identity: Identity) : ImportResult()
+
+    /**
+     * An existing identity would be overwritten.
+     *
+     * @property existingIdentity The identity currently stored on this device
+     * @property backupIdentity The identity from the backup file (preview only, not yet imported)
+     */
+    data class Conflict(
+        val existingIdentity: Identity,
+        val backupIdentity: Identity
+    ) : ImportResult()
+
+    /**
+     * Import failed due to an error.
+     *
+     * @property message Description of the error
+     * @property cause The underlying exception, if any
+     */
+    data class Error(val message: String, val cause: Throwable? = null) : ImportResult()
+}

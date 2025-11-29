@@ -530,6 +530,169 @@ class IdentityManagerTest {
             identityManager.sign(message)
         }
     }
+
+    // ==================== Conflict Handling Tests ====================
+
+    @Test
+    fun `previewBackup returns identity without importing`() {
+        // Create and export identity
+        val originalIdentity = identityManager.initialize()
+        val backupFile = tempDir.resolve("backup.gvbk").toFile()
+        identityManager.exportBackup("password", backupFile)
+
+        // Delete identity
+        identityManager.deleteIdentity()
+        assertFalse(identityManager.hasIdentity())
+
+        // Preview should return identity but not import
+        val previewedIdentity = identityManager.previewBackup(backupFile, "password")
+
+        assertArrayEquals(originalIdentity.publicKey, previewedIdentity.publicKey)
+        assertFalse(identityManager.hasIdentity()) // Still no identity stored
+    }
+
+    @Test
+    fun `checkImportConflict returns Success when no existing identity`() {
+        // Create identity in a separate manager, export, then delete
+        val otherManager = IdentityManager(InMemorySecureStorage(), cryptoProvider)
+        otherManager.initialize()
+        val backupFile = tempDir.resolve("backup.gvbk").toFile()
+        otherManager.exportBackup("password", backupFile)
+
+        // Our manager has no identity
+        assertFalse(identityManager.hasIdentity())
+
+        val result = identityManager.checkImportConflict(backupFile, "password")
+
+        assertTrue(result is ImportResult.Success)
+    }
+
+    @Test
+    fun `checkImportConflict returns Success when importing same identity`() {
+        // Create identity and export
+        identityManager.initialize()
+        val backupFile = tempDir.resolve("backup.gvbk").toFile()
+        identityManager.exportBackup("password", backupFile)
+
+        // Same identity exists, should not be a conflict
+        val result = identityManager.checkImportConflict(backupFile, "password")
+
+        assertTrue(result is ImportResult.Success)
+    }
+
+    @Test
+    fun `checkImportConflict returns Conflict when importing different identity`() {
+        // Create first identity
+        val firstIdentity = identityManager.initialize()
+
+        // Create backup from different identity
+        val otherManager = IdentityManager(InMemorySecureStorage(), cryptoProvider)
+        val otherIdentity = otherManager.initialize()
+        val backupFile = tempDir.resolve("other-backup.gvbk").toFile()
+        otherManager.exportBackup("password", backupFile)
+
+        // Check conflict
+        val result = identityManager.checkImportConflict(backupFile, "password")
+
+        assertTrue(result is ImportResult.Conflict)
+        val conflict = result as ImportResult.Conflict
+        assertArrayEquals(firstIdentity.publicKey, conflict.existingIdentity.publicKey)
+        assertArrayEquals(otherIdentity.publicKey, conflict.backupIdentity.publicKey)
+    }
+
+    @Test
+    fun `checkImportConflict returns Error for invalid password`() {
+        val otherManager = IdentityManager(InMemorySecureStorage(), cryptoProvider)
+        otherManager.initialize()
+        val backupFile = tempDir.resolve("backup.gvbk").toFile()
+        otherManager.exportBackup("correctPassword", backupFile)
+
+        val result = identityManager.checkImportConflict(backupFile, "wrongPassword")
+
+        assertTrue(result is ImportResult.Error)
+    }
+
+    @Test
+    fun `importBackupSafe blocks import on conflict by default`() {
+        // Create existing identity
+        val existingIdentity = identityManager.initialize()
+
+        // Create backup from different identity
+        val otherManager = IdentityManager(InMemorySecureStorage(), cryptoProvider)
+        otherManager.initialize()
+        val backupFile = tempDir.resolve("other-backup.gvbk").toFile()
+        otherManager.exportBackup("password", backupFile)
+
+        // Try to import without force
+        val result = identityManager.importBackupSafe(backupFile, "password")
+
+        assertTrue(result is ImportResult.Conflict)
+        // Original identity should still be there
+        assertArrayEquals(existingIdentity.publicKey, identityManager.getIdentity().publicKey)
+    }
+
+    @Test
+    fun `importBackupSafe succeeds when no conflict`() {
+        // Create backup from other identity
+        val otherManager = IdentityManager(InMemorySecureStorage(), cryptoProvider)
+        val otherIdentity = otherManager.initialize()
+        val backupFile = tempDir.resolve("backup.gvbk").toFile()
+        otherManager.exportBackup("password", backupFile)
+
+        // Our manager has no identity
+        assertFalse(identityManager.hasIdentity())
+
+        val result = identityManager.importBackupSafe(backupFile, "password")
+
+        assertTrue(result is ImportResult.Success)
+        val success = result as ImportResult.Success
+        assertArrayEquals(otherIdentity.publicKey, success.identity.publicKey)
+        assertTrue(identityManager.hasIdentity())
+    }
+
+    @Test
+    fun `importBackupSafe with force overwrites existing identity`() {
+        // Create existing identity
+        identityManager.initialize()
+
+        // Create backup from different identity
+        val otherManager = IdentityManager(InMemorySecureStorage(), cryptoProvider)
+        val otherIdentity = otherManager.initialize()
+        val backupFile = tempDir.resolve("other-backup.gvbk").toFile()
+        otherManager.exportBackup("password", backupFile)
+
+        // Force import
+        val result = identityManager.importBackupSafe(backupFile, "password", force = true)
+
+        assertTrue(result is ImportResult.Success)
+        val success = result as ImportResult.Success
+        assertArrayEquals(otherIdentity.publicKey, success.identity.publicKey)
+        assertArrayEquals(otherIdentity.publicKey, identityManager.getIdentity().publicKey)
+    }
+
+    @Test
+    fun `importBackupSafe returns Error for invalid backup`() {
+        val invalidFile = tempDir.resolve("invalid.gvbk").toFile()
+        invalidFile.writeText("not a valid backup")
+
+        val result = identityManager.importBackupSafe(invalidFile, "password")
+
+        assertTrue(result is ImportResult.Error)
+    }
+
+    @Test
+    fun `importBackupSafe allows re-importing same identity`() {
+        // Create identity and export
+        val originalIdentity = identityManager.initialize()
+        val backupFile = tempDir.resolve("backup.gvbk").toFile()
+        identityManager.exportBackup("password", backupFile)
+
+        // Import same identity (should succeed, no conflict)
+        val result = identityManager.importBackupSafe(backupFile, "password")
+
+        assertTrue(result is ImportResult.Success)
+        assertArrayEquals(originalIdentity.publicKey, identityManager.getIdentity().publicKey)
+    }
 }
 
 /**
