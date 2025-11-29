@@ -1,0 +1,50 @@
+-- Invite tokens for sharing invitations
+
+CREATE TABLE invite_token (
+    token_code TEXT PRIMARY KEY NOT NULL,
+    inviter_public_key BLOB NOT NULL,
+    signature BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    max_uses INTEGER,
+    current_uses INTEGER NOT NULL DEFAULT 0,
+    message TEXT
+);
+
+CREATE INDEX invite_token_inviter ON invite_token(inviter_public_key);
+CREATE INDEX invite_token_created ON invite_token(created_at DESC);
+CREATE INDEX invite_token_expires ON invite_token(expires_at);
+
+getByCode:
+SELECT * FROM invite_token WHERE token_code = ?;
+
+getByInviter:
+SELECT * FROM invite_token WHERE inviter_public_key = ? ORDER BY created_at DESC;
+
+getAll:
+SELECT * FROM invite_token ORDER BY created_at DESC;
+
+countByInviter:
+SELECT COUNT(*) FROM invite_token WHERE inviter_public_key = ?;
+
+exists:
+SELECT COUNT(*) > 0 FROM invite_token WHERE token_code = ?;
+
+insert:
+INSERT OR REPLACE INTO invite_token(token_code, inviter_public_key, signature, created_at, expires_at, max_uses, current_uses, message)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+updateUsageCount:
+UPDATE invite_token SET current_uses = current_uses + 1 WHERE token_code = ?;
+
+delete:
+DELETE FROM invite_token WHERE token_code = ?;
+
+deleteExpired:
+DELETE FROM invite_token WHERE expires_at IS NOT NULL AND expires_at < ?;
+
+countExpired:
+SELECT COUNT(*) FROM invite_token WHERE expires_at IS NOT NULL AND expires_at < ?;
+
+deleteAll:
+DELETE FROM invite_token;

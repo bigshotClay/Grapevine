@@ -47,7 +47,13 @@ Track completed work here to avoid repeating effort across sessions.
   - Created `GenesisManager` class with `GenesisStorage` interface
   - Created `InMemoryGenesisStorage` for testing
   - Added `GenesisInfo`, `GenesisResult`, `ValidationResult` data classes
-- [ ] #22 - FR-4: Invite Generation - Generate invite tokens
+- [x] #22 - FR-4: Invite Generation - Generate invite tokens
+  - Created `InviteToken` class with token code, inviter public key, signature, expiration, and usage limits
+  - Created `InviteTokenStorage` interface and `InMemoryInviteTokenStorage` implementation
+  - Created `InviteManager` class with token generation, validation, redemption, and revocation
+  - Added `invite_token` SQLDelight table for persistent storage
+  - Added shareable token format: `grapevine://invite/{code}#{publicKey}#{signature}`
+  - Full test coverage for token lifecycle
 - [ ] #23 - FR-5: Invite Acceptance - Redeem invites and counter-sign
 - [ ] #24 - FR-6: Invite Chain Recording - Record invites in distributed chain
 - [ ] #25 - FR-7: Invite Tracing - View complete invite chain to genesis
