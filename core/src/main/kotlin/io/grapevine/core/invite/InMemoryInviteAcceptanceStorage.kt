@@ -12,6 +12,15 @@ import kotlin.concurrent.write
  *
  * ## Thread Safety
  * This implementation is thread-safe using read-write locks.
+ *
+ * ## Defensive Copying
+ * All stored and returned [InviteAcceptance] objects are deep-copied to prevent
+ * external mutation of stored state. The [InviteAcceptance.copy] method performs
+ * deep copies of all ByteArray fields (public keys and signatures).
+ *
+ * ## Deterministic Behavior
+ * Query methods return results sorted by [InviteAcceptance.acceptedAt] descending
+ * (most recent first) to ensure deterministic ordering.
  */
 class InMemoryInviteAcceptanceStorage : InviteAcceptanceStorage {
     private val lock = ReentrantReadWriteLock()
@@ -41,8 +50,10 @@ class InMemoryInviteAcceptanceStorage : InviteAcceptanceStorage {
     }
 
     override fun getMyInvite(inviteePublicKey: ByteArray): InviteAcceptance? = lock.read {
+        // Return the most recent acceptance for deterministic behavior
         acceptances.values
-            .find { it.inviteePublicKey.contentEquals(inviteePublicKey) }
+            .filter { it.inviteePublicKey.contentEquals(inviteePublicKey) }
+            .maxByOrNull { it.acceptedAt }
             ?.copy()
     }
 

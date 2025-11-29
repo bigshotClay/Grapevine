@@ -107,7 +107,7 @@ class InMemoryInviteAcceptanceStorageTest {
     }
 
     @Test
-    fun `getMyInvite returns first acceptance for invitee`() {
+    fun `getMyInvite returns acceptance for invitee`() {
         val inviteeKey = generatePublicKey()
         val acceptance = createAcceptance(inviteePublicKey = inviteeKey)
 
@@ -117,6 +117,31 @@ class InMemoryInviteAcceptanceStorageTest {
 
         assertNotNull(myInvite)
         assertTrue(myInvite!!.inviteePublicKey.contentEquals(inviteeKey))
+    }
+
+    @Test
+    fun `getMyInvite returns most recent acceptance when multiple exist`() {
+        val inviteeKey = generatePublicKey()
+        val older = createAcceptance(
+            tokenCode = "older-token",
+            inviteePublicKey = inviteeKey,
+            acceptedAt = 1000
+        )
+        val newer = createAcceptance(
+            tokenCode = "newer-token",
+            inviteePublicKey = inviteeKey,
+            acceptedAt = 2000
+        )
+
+        // Save in random order to ensure ordering isn't dependent on insertion
+        storage.saveAcceptance(newer)
+        storage.saveAcceptance(older)
+
+        val myInvite = storage.getMyInvite(inviteeKey)
+
+        assertNotNull(myInvite)
+        assertEquals("newer-token", myInvite!!.tokenCode)
+        assertEquals(2000, myInvite.acceptedAt)
     }
 
     @Test
@@ -261,5 +286,20 @@ class InMemoryInviteAcceptanceStorageTest {
         // Stored version should be unaffected
         val retrieved = storage.getAcceptance(acceptance.tokenCode)
         assertFalse(retrieved!!.inviterPublicKey.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `modifying retrieved byte arrays does not affect stored values`() {
+        val acceptance = createAcceptance()
+        storage.saveAcceptance(acceptance)
+
+        // Get a copy and mutate its byte arrays
+        val retrieved = storage.getAcceptance(acceptance.tokenCode)
+        val originalInviterKey = retrieved!!.inviterPublicKey.copyOf()
+        retrieved.inviterPublicKey.fill(0)
+
+        // Retrieve again - should be unchanged
+        val retrievedAgain = storage.getAcceptance(acceptance.tokenCode)
+        assertTrue(retrievedAgain!!.inviterPublicKey.contentEquals(originalInviterKey))
     }
 }
