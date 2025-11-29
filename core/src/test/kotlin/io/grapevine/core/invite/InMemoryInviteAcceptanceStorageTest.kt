@@ -3,6 +3,7 @@ package io.grapevine.core.invite
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import java.security.SecureRandom
 
 class InMemoryInviteAcceptanceStorageTest {
@@ -62,13 +63,24 @@ class InMemoryInviteAcceptanceStorageTest {
     }
 
     @Test
-    fun `saveAcceptance replaces existing acceptance`() {
+    fun `saveAcceptance returns true for new insert`() {
+        val acceptance = createAcceptance()
+
+        val isNew = storage.saveAcceptance(acceptance)
+
+        assertTrue(isNew)
+    }
+
+    @Test
+    fun `saveAcceptance returns false when replacing existing`() {
         val acceptance1 = createAcceptance(tokenCode = "code")
         val acceptance2 = createAcceptance(tokenCode = "code")
 
-        storage.saveAcceptance(acceptance1)
-        storage.saveAcceptance(acceptance2)
+        val firstSave = storage.saveAcceptance(acceptance1)
+        val secondSave = storage.saveAcceptance(acceptance2)
 
+        assertTrue(firstSave)
+        assertFalse(secondSave)
         assertEquals(1, storage.getAllAcceptances().size)
     }
 
@@ -301,5 +313,120 @@ class InMemoryInviteAcceptanceStorageTest {
         // Retrieve again - should be unchanged
         val retrievedAgain = storage.getAcceptance(acceptance.tokenCode)
         assertTrue(retrievedAgain!!.inviterPublicKey.contentEquals(originalInviterKey))
+    }
+
+    // ==================== Input Validation Tests ====================
+
+    @Test
+    fun `getAcceptance throws for blank token code`() {
+        assertThrows<IllegalArgumentException> {
+            storage.getAcceptance("   ")
+        }
+    }
+
+    @Test
+    fun `deleteAcceptance throws for blank token code`() {
+        assertThrows<IllegalArgumentException> {
+            storage.deleteAcceptance("   ")
+        }
+    }
+
+    @Test
+    fun `hasAcceptance throws for blank token code`() {
+        assertThrows<IllegalArgumentException> {
+            storage.hasAcceptance("   ")
+        }
+    }
+
+    @Test
+    fun `getAcceptancesByInviter throws for invalid key size`() {
+        assertThrows<IllegalArgumentException> {
+            storage.getAcceptancesByInviter(ByteArray(16))
+        }
+    }
+
+    @Test
+    fun `getAcceptancesByInvitee throws for invalid key size`() {
+        assertThrows<IllegalArgumentException> {
+            storage.getAcceptancesByInvitee(ByteArray(16))
+        }
+    }
+
+    @Test
+    fun `getMyInvite throws for invalid key size`() {
+        assertThrows<IllegalArgumentException> {
+            storage.getMyInvite(ByteArray(64))
+        }
+    }
+
+    @Test
+    fun `hasBeenInvited throws for invalid key size`() {
+        assertThrows<IllegalArgumentException> {
+            storage.hasBeenInvited(ByteArray(0))
+        }
+    }
+
+    @Test
+    fun `getInviteeCount throws for invalid key size`() {
+        assertThrows<IllegalArgumentException> {
+            storage.getInviteeCount(ByteArray(31))
+        }
+    }
+
+    // ==================== Tie-breaker Sorting Tests ====================
+
+    @Test
+    fun `sorting uses tokenCode as tie-breaker for equal timestamps`() {
+        val inviterKey = generatePublicKey()
+        val timestamp = 1000L
+
+        // Create acceptances with same timestamp but different token codes
+        val acceptanceA = createAcceptance(
+            tokenCode = "aaa-token",
+            inviterPublicKey = inviterKey,
+            acceptedAt = timestamp
+        )
+        val acceptanceB = createAcceptance(
+            tokenCode = "bbb-token",
+            inviterPublicKey = inviterKey,
+            acceptedAt = timestamp
+        )
+        val acceptanceC = createAcceptance(
+            tokenCode = "ccc-token",
+            inviterPublicKey = inviterKey,
+            acceptedAt = timestamp
+        )
+
+        // Save in non-alphabetical order
+        storage.saveAcceptance(acceptanceC)
+        storage.saveAcceptance(acceptanceA)
+        storage.saveAcceptance(acceptanceB)
+
+        val results = storage.getAcceptancesByInviter(inviterKey)
+
+        // Should be sorted by tokenCode ascending (tie-breaker)
+        assertEquals(3, results.size)
+        assertEquals("aaa-token", results[0].tokenCode)
+        assertEquals("bbb-token", results[1].tokenCode)
+        assertEquals("ccc-token", results[2].tokenCode)
+    }
+
+    @Test
+    fun `getAllAcceptances uses tokenCode as tie-breaker`() {
+        val timestamp = 1000L
+
+        val acceptanceZ = createAcceptance(tokenCode = "zzz", acceptedAt = timestamp)
+        val acceptanceA = createAcceptance(tokenCode = "aaa", acceptedAt = timestamp)
+        val acceptanceM = createAcceptance(tokenCode = "mmm", acceptedAt = timestamp)
+
+        storage.saveAcceptance(acceptanceZ)
+        storage.saveAcceptance(acceptanceA)
+        storage.saveAcceptance(acceptanceM)
+
+        val results = storage.getAllAcceptances()
+
+        assertEquals("aaa", results[0].tokenCode)
+        assertEquals("mmm", results[1].tokenCode)
+        assertEquals("zzz", results[2].tokenCode)
     }
 }
