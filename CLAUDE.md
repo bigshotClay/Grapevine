@@ -54,7 +54,16 @@ Track completed work here to avoid repeating effort across sessions.
   - Added `invite_token` SQLDelight table for persistent storage
   - Added shareable token format: `grapevine://invite/{code}#{publicKey}#{signature}`
   - Full test coverage for token lifecycle
-- [ ] #23 - FR-5: Invite Acceptance - Redeem invites and counter-sign
+- [x] #23 - FR-5: Invite Acceptance - Redeem invites and counter-sign
+  - Created `InviteAcceptance` class for tracking accepted invites with counter-signature
+  - Created `InviteAcceptanceResult` sealed class for acceptance outcomes
+  - Created `InviteAcceptanceStorage` interface and `InMemoryInviteAcceptanceStorage` implementation
+  - Added `acceptInvite()` method to accept invites from shareable strings
+  - Added `acceptInviteFromStorage()` method for local token acceptance
+  - Implemented counter-signature generation for invitee
+  - Added verification for self-invite and duplicate acceptance prevention
+  - Added query methods: `getMyInvite()`, `getMyInvitees()`, `hasBeenInvited()`
+  - Full test coverage for acceptance flow
 - [ ] #24 - FR-6: Invite Chain Recording - Record invites in distributed chain
 - [ ] #25 - FR-7: Invite Tracing - View complete invite chain to genesis
 
