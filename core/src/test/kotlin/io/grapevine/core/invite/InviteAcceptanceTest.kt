@@ -262,15 +262,17 @@ class InviteAcceptanceTest {
     // ==================== ToString Tests ====================
 
     @Test
-    fun `toString does not expose full public keys`() {
+    fun `toString does not expose sensitive data`() {
         val acceptance = createAcceptance()
         val str = acceptance.toString()
 
-        // Should contain truncated representations
-        assertTrue(str.contains("..."))
+        // Should be fully redacted
+        assertTrue(str.contains("<redacted>"))
         // Should not contain the full public key hex
         val fullHex = acceptance.inviterPublicKey.joinToString("") { "%02x".format(it) }
         assertFalse(str.contains(fullHex))
+        // Should not contain token code
+        assertFalse(str.contains(acceptance.tokenCode))
     }
 
     // ==================== Copy Tests ====================
@@ -307,5 +309,178 @@ class InviteAcceptanceTest {
     fun `message is trimmed of whitespace`() {
         val acceptance = createAcceptance(message = "  Hello World  ")
         assertEquals("Hello World", acceptance.message)
+    }
+
+    // ==================== ToString Redaction Tests ====================
+
+    @Test
+    fun `toString is fully redacted`() {
+        val acceptance = createAcceptance()
+        val str = acceptance.toString()
+
+        assertTrue(str.contains("<redacted>"))
+        assertFalse(str.contains(acceptance.tokenCode))
+    }
+
+    @Test
+    fun `toDebugString shows partial key fingerprints`() {
+        val acceptance = createAcceptance()
+        val debugStr = acceptance.toDebugString()
+
+        // Should contain partial info but not full keys
+        assertTrue(debugStr.contains("..."))
+        assertTrue(debugStr.contains("acceptedAt"))
+    }
+
+    // ==================== Base64 Normalization Tests ====================
+
+    @Test
+    fun `fromBase64 handles URL-safe encoding without padding`() {
+        val inviterKey = generatePublicKey()
+        val inviteeKey = generatePublicKey()
+        val inviterSig = generateSignature()
+        val inviteeSig = generateSignature()
+
+        // URL-safe without padding
+        val inviterKeyBase64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(inviterKey)
+        val inviteeKeyBase64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(inviteeKey)
+        val inviterSigBase64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(inviterSig)
+        val inviteeSigBase64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(inviteeSig)
+
+        val acceptance = InviteAcceptance.fromBase64(
+            tokenCode = "test-code",
+            inviterPublicKeyBase64 = inviterKeyBase64,
+            inviteePublicKeyBase64 = inviteeKeyBase64,
+            inviterSignatureBase64 = inviterSigBase64,
+            inviteeSignatureBase64 = inviteeSigBase64
+        )
+
+        assertArrayEquals(inviterKey, acceptance.inviterPublicKey)
+    }
+
+    @Test
+    fun `fromBase64 handles standard encoding with padding`() {
+        val inviterKey = generatePublicKey()
+        val inviteeKey = generatePublicKey()
+        val inviterSig = generateSignature()
+        val inviteeSig = generateSignature()
+
+        // Standard Base64 with padding
+        val inviterKeyBase64 = java.util.Base64.getEncoder().encodeToString(inviterKey)
+        val inviteeKeyBase64 = java.util.Base64.getEncoder().encodeToString(inviteeKey)
+        val inviterSigBase64 = java.util.Base64.getEncoder().encodeToString(inviterSig)
+        val inviteeSigBase64 = java.util.Base64.getEncoder().encodeToString(inviteeSig)
+
+        val acceptance = InviteAcceptance.fromBase64(
+            tokenCode = "test-code",
+            inviterPublicKeyBase64 = inviterKeyBase64,
+            inviteePublicKeyBase64 = inviteeKeyBase64,
+            inviterSignatureBase64 = inviterSigBase64,
+            inviteeSignatureBase64 = inviteeSigBase64
+        )
+
+        assertArrayEquals(inviterKey, acceptance.inviterPublicKey)
+    }
+
+    @Test
+    fun `fromBase64 throws descriptive error for invalid encoding`() {
+        val exception = assertThrows<IllegalArgumentException> {
+            InviteAcceptance.fromBase64(
+                tokenCode = "test-code",
+                inviterPublicKeyBase64 = "not-valid-base64!!!",
+                inviteePublicKeyBase64 = java.util.Base64.getEncoder().encodeToString(generatePublicKey()),
+                inviterSignatureBase64 = java.util.Base64.getEncoder().encodeToString(generateSignature()),
+                inviteeSignatureBase64 = java.util.Base64.getEncoder().encodeToString(generateSignature())
+            )
+        }
+
+        assertTrue(exception.message?.contains("inviterPublicKey") == true)
+    }
+
+    // ==================== Serialization Roundtrip Tests ====================
+
+    @Test
+    fun `toMap and fromMap roundtrip preserves data`() {
+        val original = createAcceptance(message = "Test message")
+
+        val map = original.toMap()
+        val restored = InviteAcceptance.fromMap(map)
+
+        assertEquals(original.tokenCode, restored.tokenCode)
+        assertArrayEquals(original.inviterPublicKey, restored.inviterPublicKey)
+        assertArrayEquals(original.inviteePublicKey, restored.inviteePublicKey)
+        assertArrayEquals(original.inviterSignature, restored.inviterSignature)
+        assertArrayEquals(original.inviteeSignature, restored.inviteeSignature)
+        assertEquals(original.acceptedAt, restored.acceptedAt)
+        assertEquals(original.message, restored.message)
+    }
+
+    @Test
+    fun `toMap contains all expected keys`() {
+        val acceptance = createAcceptance(message = "Hello")
+        val map = acceptance.toMap()
+
+        assertTrue(map.containsKey("tokenCode"))
+        assertTrue(map.containsKey("inviterPublicKey"))
+        assertTrue(map.containsKey("inviteePublicKey"))
+        assertTrue(map.containsKey("inviterSignature"))
+        assertTrue(map.containsKey("inviteeSignature"))
+        assertTrue(map.containsKey("acceptedAt"))
+        assertTrue(map.containsKey("message"))
+    }
+
+    @Test
+    fun `fromMap throws for missing required field`() {
+        val exception = assertThrows<IllegalArgumentException> {
+            InviteAcceptance.fromMap(mapOf("tokenCode" to "test"))
+        }
+
+        assertTrue(exception.message?.contains("Missing required field") == true)
+    }
+
+    // ==================== Constant Time Comparison Tests ====================
+
+    @Test
+    fun `constantTimeEquals returns true for equal arrays`() {
+        val arr1 = generatePublicKey()
+        val arr2 = arr1.copyOf()
+
+        assertTrue(InviteAcceptance.constantTimeEquals(arr1, arr2))
+    }
+
+    @Test
+    fun `constantTimeEquals returns false for different arrays`() {
+        val arr1 = generatePublicKey()
+        val arr2 = generatePublicKey()
+
+        assertFalse(InviteAcceptance.constantTimeEquals(arr1, arr2))
+    }
+
+    @Test
+    fun `constantTimeEquals returns false for different lengths`() {
+        val arr1 = ByteArray(32)
+        val arr2 = ByteArray(64)
+
+        assertFalse(InviteAcceptance.constantTimeEquals(arr1, arr2))
+    }
+
+    // ==================== Signature Base64 Accessors ====================
+
+    @Test
+    fun `inviterSignatureBase64 returns correct encoding`() {
+        val sig = generateSignature()
+        val acceptance = createAcceptance(inviterSignature = sig)
+
+        val expected = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sig)
+        assertEquals(expected, acceptance.inviterSignatureBase64)
+    }
+
+    @Test
+    fun `inviteeSignatureBase64 returns correct encoding`() {
+        val sig = generateSignature()
+        val acceptance = createAcceptance(inviteeSignature = sig)
+
+        val expected = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sig)
+        assertEquals(expected, acceptance.inviteeSignatureBase64)
     }
 }
