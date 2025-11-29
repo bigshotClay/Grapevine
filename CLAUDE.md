@@ -66,7 +66,33 @@ Track completed work here to avoid repeating effort across sessions.
     `InviteAcceptance.copy()` performs deep copy of all `ByteArray` fields. Production storage requires
     SQLDelight-backed implementation.
   - **TODO**: Implement persistent `InviteAcceptanceStorage` backed by SQLDelight `invite_acceptance` table
-- [ ] #24 - FR-6: Invite Chain Recording - Record invites in distributed chain
+- [x] #24 - FR-6: Invite Chain Recording - Record invites in distributed chain
+  - Created `InviteChainRecord` data class for dual-signed invite blocks
+    - Stores sequence number, inviter/invitee public keys, previous hash, block hash
+    - Both inviter signature and invitee counter-signature (64 bytes each)
+    - Token code, timestamp, optional message
+    - Defensive copying for all ByteArray fields
+    - Chain linking validation (first block has seq=0 and null previous_hash)
+  - Created `InviteChainStorage` interface and `InMemoryInviteChainStorage` implementation
+    - Thread-safe with ReentrantReadWriteLock
+    - Indexes on block hash, inviter, invitee, sequence number
+    - Enforces unique constraint on (inviter, sequence_number)
+    - Query methods: getByInviter, getByInvitee, getInviteFor, getLatestByInviter
+  - Created `InviteChainRecorder` for recording and validating invite blocks
+    - `recordAcceptance()`: Records InviteAcceptance as chain record with computed block hash
+    - `recordFromPeer()`: Validates and stores incoming blocks from network
+    - `validateRecord()`: Verifies block hash, chain linking, and signatures
+    - `computeBlockHash()`: SHA-256 of (seq || inviter || invitee || prev_hash || timestamp || token)
+    - Automatic sequence number assignment and chain linking
+  - Updated SQLDelight `invite_block` schema for dual signatures
+    - Added `inviter_signature` and `invitee_signature` columns (BLOB)
+    - Changed from identity foreign keys to raw public key storage (BLOB)
+    - Added `token_code`, `message` columns
+    - Added unique index on `block_hash`
+    - Created migration `2.sqm` for schema update
+  - Full test coverage: InviteChainRecordTest, InMemoryInviteChainStorageTest, InviteChainRecorderTest
+  - **Engineering notes**: `InMemoryInviteChainStorage` is for testing; uses O(n) queries.
+    Block hash computation is deterministic. Sequence conflicts throw `SequenceConflictException`.
 - [ ] #25 - FR-7: Invite Tracing - View complete invite chain to genesis
 
 ### Completed Epics

@@ -1,0 +1,33 @@
+-- Migration from version 2 to 3
+-- Updates invite_block table to support dual signatures and store public keys directly
+
+-- Drop the old table and recreate with new schema
+-- Note: This is a destructive migration. In production, you would need to migrate data.
+DROP TABLE IF EXISTS invite_block;
+
+CREATE TABLE invite_block (
+    id TEXT PRIMARY KEY NOT NULL,
+    sequence_number INTEGER NOT NULL,
+    inviter_public_key BLOB NOT NULL,
+    invitee_public_key BLOB NOT NULL,
+    previous_hash BLOB,
+    block_hash BLOB NOT NULL,
+    inviter_signature BLOB NOT NULL,
+    invitee_signature BLOB NOT NULL,
+    token_code TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    message TEXT,
+    created_at INTEGER NOT NULL
+);
+
+-- Index for finding all invites by a specific inviter
+CREATE INDEX invite_block_inviter ON invite_block(inviter_public_key);
+
+-- Index for finding the invite that brought a user into the network
+CREATE INDEX invite_block_invitee ON invite_block(invitee_public_key);
+
+-- Index for chain ordering (inviter's sequence)
+CREATE INDEX invite_block_sequence ON invite_block(inviter_public_key, sequence_number);
+
+-- Index for block hash lookups (unique to prevent duplicates)
+CREATE UNIQUE INDEX invite_block_hash ON invite_block(block_hash);

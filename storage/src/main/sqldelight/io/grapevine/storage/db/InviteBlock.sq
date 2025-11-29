@@ -1,38 +1,81 @@
--- Invite chain blocks
+-- Invite chain blocks with dual signatures
+-- Each block represents a completed invite where both inviter and invitee have signed
 
 CREATE TABLE invite_block (
     id TEXT PRIMARY KEY NOT NULL,
     sequence_number INTEGER NOT NULL,
-    inviter_id TEXT NOT NULL,
-    invitee_id TEXT NOT NULL,
-    previous_hash TEXT,
-    block_hash TEXT NOT NULL,
-    signature BLOB NOT NULL,
+    inviter_public_key BLOB NOT NULL,
+    invitee_public_key BLOB NOT NULL,
+    previous_hash BLOB,
+    block_hash BLOB NOT NULL,
+    inviter_signature BLOB NOT NULL,
+    invitee_signature BLOB NOT NULL,
+    token_code TEXT NOT NULL,
     timestamp INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    FOREIGN KEY (inviter_id) REFERENCES identity(id),
-    FOREIGN KEY (invitee_id) REFERENCES identity(id)
+    message TEXT,
+    created_at INTEGER NOT NULL
 );
 
-CREATE INDEX invite_block_inviter ON invite_block(inviter_id);
-CREATE INDEX invite_block_invitee ON invite_block(invitee_id);
-CREATE INDEX invite_block_sequence ON invite_block(inviter_id, sequence_number);
+-- Index for finding all invites by a specific inviter
+CREATE INDEX invite_block_inviter ON invite_block(inviter_public_key);
+
+-- Index for finding the invite that brought a user into the network
+CREATE INDEX invite_block_invitee ON invite_block(invitee_public_key);
+
+-- Index for chain ordering (inviter's sequence)
+CREATE INDEX invite_block_sequence ON invite_block(inviter_public_key, sequence_number);
+
+-- Index for block hash lookups
+CREATE UNIQUE INDEX invite_block_hash ON invite_block(block_hash);
 
 getById:
 SELECT * FROM invite_block WHERE id = ?;
 
+getByBlockHash:
+SELECT * FROM invite_block WHERE block_hash = ?;
+
 getByInviter:
-SELECT * FROM invite_block WHERE inviter_id = ? ORDER BY sequence_number ASC;
+SELECT * FROM invite_block WHERE inviter_public_key = ? ORDER BY sequence_number ASC;
 
 getByInvitee:
-SELECT * FROM invite_block WHERE invitee_id = ? ORDER BY timestamp ASC;
+SELECT * FROM invite_block WHERE invitee_public_key = ? ORDER BY timestamp ASC;
+
+getBySequence:
+SELECT * FROM invite_block WHERE inviter_public_key = ? AND sequence_number = ?;
 
 getLatestByInviter:
-SELECT * FROM invite_block WHERE inviter_id = ? ORDER BY sequence_number DESC LIMIT 1;
+SELECT * FROM invite_block WHERE inviter_public_key = ? ORDER BY sequence_number DESC LIMIT 1;
+
+getInviteFor:
+SELECT * FROM invite_block WHERE invitee_public_key = ? ORDER BY timestamp ASC LIMIT 1;
+
+getInviteeCount:
+SELECT COUNT(*) FROM invite_block WHERE inviter_public_key = ?;
+
+hasBeenInvited:
+SELECT EXISTS(SELECT 1 FROM invite_block WHERE invitee_public_key = ?);
+
+existsById:
+SELECT EXISTS(SELECT 1 FROM invite_block WHERE id = ?);
+
+existsByBlockHash:
+SELECT EXISTS(SELECT 1 FROM invite_block WHERE block_hash = ?);
+
+getAll:
+SELECT * FROM invite_block ORDER BY timestamp ASC, id ASC;
+
+count:
+SELECT COUNT(*) FROM invite_block;
 
 insert:
-INSERT OR REPLACE INTO invite_block(id, sequence_number, inviter_id, invitee_id, previous_hash, block_hash, signature, timestamp, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT OR REPLACE INTO invite_block(
+    id, sequence_number, inviter_public_key, invitee_public_key,
+    previous_hash, block_hash, inviter_signature, invitee_signature,
+    token_code, timestamp, message, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 delete:
 DELETE FROM invite_block WHERE id = ?;
+
+clear:
+DELETE FROM invite_block;
