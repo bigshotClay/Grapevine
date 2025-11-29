@@ -175,7 +175,7 @@ class InviteAcceptanceFlowTest {
     }
 
     @Test
-    fun `acceptInvite with external token creates acceptance without full validation`() {
+    fun `acceptInvite with external token rejects unverifiable tokens`() {
         // Alice creates a token
         val genResult = aliceInviteManager.generateToken()
         assertTrue(genResult is TokenGenerationResult.Success)
@@ -188,8 +188,9 @@ class InviteAcceptanceFlowTest {
         // This simulates receiving a token from outside the local network
         val acceptResult = bobInviteManager.acceptInvite(shareable)
 
-        // Should still succeed (limited validation for external tokens)
-        assertTrue(acceptResult is InviteAcceptanceResult.Success)
+        // Security: External tokens cannot be verified without full token data
+        // in local storage, so they are rejected to prevent forgery attacks
+        assertTrue(acceptResult is InviteAcceptanceResult.TokenNotFound)
     }
 
     @Test
@@ -418,8 +419,8 @@ class InviteAcceptanceFlowTest {
     // ==================== Backward Compatibility Tests ====================
 
     @Test
-    fun `InviteManager works without acceptance storage`() {
-        // Create manager without acceptance storage (backward compatible)
+    fun `InviteManager without acceptance storage allows token generation but rejects acceptance`() {
+        // Create manager without acceptance storage (backward compatible for token generation)
         val manager = InviteManager(
             aliceIdentityManager,
             aliceTokenStorage,
@@ -429,11 +430,25 @@ class InviteAcceptanceFlowTest {
         // Token generation should still work
         val genResult = manager.generateToken()
         assertTrue(genResult is TokenGenerationResult.Success)
+        val token = (genResult as TokenGenerationResult.Success).token
 
         // Acceptance-related queries return empty/default values
         assertTrue(manager.getMyInvitees().isEmpty())
         assertNull(manager.getMyInvite())
         assertEquals(0, manager.getMyInviteeCount())
         assertFalse(manager.hasBeenInvited())
+
+        // Set up Bob to try accepting using manager without acceptance storage
+        val bobManager = InviteManager(
+            bobIdentityManager,
+            bobTokenStorage,
+            cryptoProvider
+        )
+        bobTokenStorage.saveToken(token)
+
+        // Acceptance should fail because storage is required
+        val acceptResult = bobManager.acceptInviteFromStorage(token.tokenCode)
+        assertTrue(acceptResult is InviteAcceptanceResult.Error)
+        assertTrue((acceptResult as InviteAcceptanceResult.Error).message.contains("storage"))
     }
 }

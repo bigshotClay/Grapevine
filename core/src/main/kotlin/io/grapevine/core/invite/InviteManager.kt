@@ -8,11 +8,12 @@ import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 /**
- * Manages invite token generation, validation, and lifecycle.
+ * Manages invite token generation, validation, acceptance, and lifecycle.
  *
  * The InviteManager provides the core functionality for the invitation system:
  * - Generate cryptographically secure invite tokens
  * - Validate tokens for authenticity and validity
+ * - Accept invites with counter-signatures
  * - Track token usage and expiration
  *
  * ## Token Generation
@@ -24,13 +25,32 @@ import java.util.concurrent.TimeUnit
  *
  * The token is then signed by the inviter to prove authenticity.
  *
+ * ## Invite Acceptance
+ * When accepting an invite, the invitee creates a counter-signature proving
+ * their acceptance. The acceptance is stored and the token usage is incremented.
+ *
+ * **Important**: For production use, [acceptanceStorage] MUST be provided.
+ * Without acceptance storage, acceptances are not persisted and duplicate
+ * membership checks cannot be performed.
+ *
  * ## Security
  * - Tokens are signed with Ed25519 signatures
  * - Token codes are derived from SHA-256 hashes
  * - Random nonces ensure uniqueness even for same-millisecond generation
+ * - External tokens (not in local storage) are rejected to prevent unverified acceptances
+ *
+ * ## Thread Safety
+ * This class is NOT thread-safe. Concurrent acceptance attempts for the same token
+ * may result in race conditions. Callers should coordinate concurrent access
+ * externally or use transactional storage operations.
+ *
+ * ## Logging
+ * Token identifiers are hashed in logs to prevent information leakage.
+ * Full token codes should never appear in production logs.
  *
  * @property identityManager The identity manager for signing operations
  * @property storage The storage backend for persisting tokens
+ * @property acceptanceStorage The storage backend for persisting acceptances (required for production)
  * @property cryptoProvider The cryptographic provider for hashing and random generation
  */
 class InviteManager(
@@ -43,12 +63,24 @@ class InviteManager(
 
     /**
      * Secondary constructor for backward compatibility without acceptance storage.
+     *
+     * **Warning**: Without acceptance storage, invite acceptances are not persisted
+     * and duplicate membership checks are not performed. Use only for testing.
      */
     constructor(
         identityManager: IdentityManager,
         storage: InviteTokenStorage,
         cryptoProvider: CryptoProvider
     ) : this(identityManager, storage, null, cryptoProvider)
+
+    /**
+     * Returns a redacted token identifier for logging.
+     * Uses SHA-256 hash prefix to prevent token reconstruction from logs.
+     */
+    private fun redactTokenCode(tokenCode: String): String {
+        val hash = cryptoProvider.sha256(tokenCode.toByteArray(Charsets.UTF_8))
+        return "token:${hash.take(4).joinToString("") { "%02x".format(it) }}..."
+    }
 
     /**
      * Generates a new invite token.
@@ -97,7 +129,7 @@ class InviteManager(
             // Store the token
             storage.saveToken(token)
 
-            logger.info("Generated invite token: ${token.tokenCode.take(12)}...")
+            logger.info("Generated invite token: ${redactTokenCode(token.tokenCode)}")
             TokenGenerationResult.Success(token)
         } catch (e: Exception) {
             logger.error("Failed to generate invite token", e)
@@ -140,7 +172,7 @@ class InviteManager(
      * @return [TokenValidationResult] with validation status
      */
     fun validateToken(tokenCode: String): TokenValidationResult {
-        logger.debug("Validating token: ${tokenCode.take(12)}...")
+        logger.debug("Validating token: ${redactTokenCode(tokenCode)}")
 
         // Look up the token
         val token = storage.getToken(tokenCode)
@@ -175,7 +207,7 @@ class InviteManager(
      * @return [TokenValidationResult] with the redemption status
      */
     fun redeemToken(tokenCode: String): TokenValidationResult {
-        logger.info("Redeeming token: ${tokenCode.take(12)}...")
+        logger.info("Redeeming token: ${redactTokenCode(tokenCode)}")
 
         // Validate first
         val validationResult = validateToken(tokenCode)
@@ -187,7 +219,7 @@ class InviteManager(
         val updatedToken = storage.incrementUsageCount(tokenCode)
             ?: return TokenValidationResult.NotFound
 
-        logger.info("Token redeemed: ${tokenCode.take(12)}... (uses: ${updatedToken.currentUses}/${updatedToken.maxUses ?: "unlimited"})")
+        logger.info("Token redeemed: ${redactTokenCode(tokenCode)} (uses: ${updatedToken.currentUses}/${updatedToken.maxUses ?: "unlimited"})")
         return TokenValidationResult.Valid(updatedToken)
     }
 
@@ -241,7 +273,7 @@ class InviteManager(
 
         val deleted = storage.deleteToken(tokenCode)
         if (deleted) {
-            logger.info("Revoked token: ${tokenCode.take(12)}...")
+            logger.info("Revoked token: ${redactTokenCode(tokenCode)}")
         }
         return deleted
     }
@@ -376,7 +408,7 @@ class InviteManager(
      * @return [InviteAcceptanceResult] with the outcome
      */
     fun acceptInviteFromStorage(tokenCode: String): InviteAcceptanceResult {
-        logger.info("Accepting invite from stored token: ${tokenCode.take(12)}...")
+        logger.info("Accepting invite from stored token: ${redactTokenCode(tokenCode)}")
 
         val token = storage.getToken(tokenCode)
             ?: return InviteAcceptanceResult.TokenNotFound
@@ -450,64 +482,60 @@ class InviteManager(
     }
 
     /**
-     * Validates and accepts an external token that is not in local storage.
+     * Handles external tokens that are not in local storage.
      *
-     * For tokens received via shareable string, we need to verify the signature
-     * before accepting. Since the shareable string doesn't contain expiration/usage info,
-     * we can only do basic signature verification.
+     * **Security**: External tokens cannot be fully verified because the shareable
+     * string format does not include the full token data (createdAt, expiresAt, maxUses, message)
+     * required to verify the inviter's signature. Without verification:
+     * - We cannot confirm the inviter actually created this token
+     * - We cannot check token expiration or usage limits
+     * - Token redemption accounting is impossible
      *
-     * Note: In a full P2P implementation, the invitee would connect to the inviter's
-     * node to verify the complete token data before accepting.
+     * Therefore, external tokens are REJECTED until they can be fetched from the
+     * network or local storage. In a full P2P implementation, the invitee would
+     * connect to the inviter's node to obtain and verify the complete token data.
+     *
+     * @param tokenData The parsed token data from a shareable string
+     * @return [InviteAcceptanceResult.TokenNotFound] - token must be in local storage
      */
     private fun validateAndAcceptExternalToken(tokenData: ShareableTokenData): InviteAcceptanceResult {
-        // For external tokens without full data, we can only do limited validation
-        // The full token data (createdAt, expiresAt, maxUses, message) is not in the shareable string
-        // We'll need to verify with the network in a real implementation
+        // Security: We cannot accept tokens that are not in local storage because:
+        // 1. The shareable string lacks token metadata (createdAt, expiresAt, maxUses)
+        // 2. Without metadata, we cannot verify the inviter's signature
+        // 3. Without verification, we cannot trust the token is authentic
+        // 4. Accepting unverified tokens would allow forgery attacks
 
-        // For now, we accept based on the signature being from a valid key
-        // This is safe because the counter-signature creates a mutual commitment
+        logger.warn("Cannot accept external token ${redactTokenCode(tokenData.tokenCode)}: " +
+                "token not found in local storage and cannot be verified")
 
-        logger.info("Accepting external token: ${tokenData.tokenCode.take(12)}...")
-
-        return try {
-            val myPublicKey = identityManager.getPublicKey()
-
-            // Build the acceptance data to sign (includes inviter's info)
-            val acceptanceDataToSign = buildAcceptanceSignatureData(
-                tokenData.tokenCode,
-                tokenData.inviterPublicKey,
-                myPublicKey
-            )
-
-            // Create counter-signature
-            val inviteeSignature = identityManager.sign(acceptanceDataToSign)
-
-            // Create the acceptance record
-            val acceptance = InviteAcceptance(
-                tokenCode = tokenData.tokenCode,
-                inviterPublicKey = tokenData.inviterPublicKey,
-                inviteePublicKey = myPublicKey,
-                inviterSignature = tokenData.signature,
-                inviteeSignature = inviteeSignature,
-                acceptedAt = System.currentTimeMillis(),
-                message = null // Not available in shareable format
-            )
-
-            // Store the acceptance
-            acceptanceStorage?.saveAcceptance(acceptance)
-
-            logger.info("Invite accepted: ${tokenData.tokenCode.take(12)}...")
-            InviteAcceptanceResult.Success(acceptance)
-        } catch (e: Exception) {
-            logger.error("Failed to accept invite", e)
-            InviteAcceptanceResult.Error("Failed to accept invite: ${e.message}")
-        }
+        // Future: Implement P2P token fetch from inviter's node
+        // For now, require token to be in local storage
+        return InviteAcceptanceResult.TokenNotFound
     }
 
     /**
      * Performs the actual acceptance of a validated token.
+     *
+     * **Note**: This method requires [acceptanceStorage] to be configured.
+     * Without storage, acceptances cannot be persisted and duplicate membership
+     * checks cannot be performed.
+     *
+     * The acceptance signature covers (in order):
+     * - Token code (UTF-8 bytes)
+     * - Inviter's public key (32 bytes)
+     * - Invitee's public key (32 bytes)
+     *
+     * @param token The validated token to accept
+     * @return [InviteAcceptanceResult] with the outcome
      */
     private fun performAcceptance(token: InviteToken): InviteAcceptanceResult {
+        // Require acceptance storage for production flows
+        val storage = acceptanceStorage
+        if (storage == null) {
+            logger.error("Cannot accept invite: acceptance storage not configured")
+            return InviteAcceptanceResult.Error("Acceptance storage not configured")
+        }
+
         return try {
             val myPublicKey = identityManager.getPublicKey()
 
@@ -518,12 +546,10 @@ class InviteManager(
             }
 
             // Check if already a member
-            acceptanceStorage?.let { storage ->
-                val existingAcceptance = storage.getMyInvite(myPublicKey)
-                if (existingAcceptance != null) {
-                    logger.warn("User is already a member of the network")
-                    return InviteAcceptanceResult.AlreadyMember(existingAcceptance)
-                }
+            val existingAcceptance = storage.getMyInvite(myPublicKey)
+            if (existingAcceptance != null) {
+                logger.warn("User is already a member of the network")
+                return InviteAcceptanceResult.AlreadyMember(existingAcceptance)
             }
 
             // Build the acceptance data to sign
@@ -547,13 +573,13 @@ class InviteManager(
                 message = token.message
             )
 
-            // Store the acceptance
-            acceptanceStorage?.saveAcceptance(acceptance)
+            // Store the acceptance and redeem the token
+            // Note: These are not atomic; a production implementation should use
+            // a transactional storage operation to ensure consistency
+            storage.saveAcceptance(acceptance)
+            this.storage.incrementUsageCount(token.tokenCode)
 
-            // Redeem the token (increment usage count)
-            storage.incrementUsageCount(token.tokenCode)
-
-            logger.info("Invite accepted: ${token.tokenCode.take(12)}...")
+            logger.info("Invite accepted: ${redactTokenCode(token.tokenCode)}")
             InviteAcceptanceResult.Success(acceptance)
         } catch (e: Exception) {
             logger.error("Failed to accept invite", e)
@@ -643,15 +669,31 @@ class InviteManager(
     }
 
     /**
-     * Builds the data that the invitee signs to accept an invite.
+     * Builds the canonical data that the invitee signs to accept an invite.
      *
-     * The acceptance signature covers:
-     * - Token code (as UTF-8 bytes)
-     * - Inviter's public key
-     * - Invitee's public key
+     * ## Signature Data Format
+     * The acceptance signature covers the following bytes in exact order:
+     * 1. Token code (variable length, UTF-8 encoded)
+     * 2. Inviter's Ed25519 public key (32 bytes, raw bytes)
+     * 3. Invitee's Ed25519 public key (32 bytes, raw bytes)
      *
-     * This creates a cryptographic proof that the invitee accepted the specific
-     * invite from the specific inviter.
+     * Total size: `tokenCode.length + 64` bytes
+     *
+     * ## Purpose
+     * This creates a cryptographic proof that:
+     * - The invitee accepted a specific invite (identified by tokenCode)
+     * - The invite came from a specific inviter (their public key)
+     * - The invitee acknowledges the invitation (their own key in the data)
+     *
+     * ## Security
+     * Both inviter and invitee MUST use this exact byte format to ensure
+     * signature verification succeeds. The format is canonical - there is
+     * no padding, separators, or length prefixes.
+     *
+     * @param tokenCode The unique invite token code
+     * @param inviterPublicKey The inviter's Ed25519 public key (must be 32 bytes)
+     * @param inviteePublicKey The invitee's Ed25519 public key (must be 32 bytes)
+     * @return The canonical byte array to sign
      */
     private fun buildAcceptanceSignatureData(
         tokenCode: String,
