@@ -62,6 +62,47 @@ class CryptoProvider {
     }
 
     /**
+     * Signs a message using Ed25519 with raw byte arrays.
+     *
+     * This is a convenience method that accepts raw byte arrays instead of Key objects,
+     * making it easier to use from modules that don't have direct access to LazySodium types.
+     *
+     * @param message The message to sign
+     * @param secretKey The 64-byte Ed25519 secret key
+     * @return The 64-byte Ed25519 signature
+     * @throws IllegalArgumentException if the secret key is not 64 bytes
+     */
+    fun signRaw(message: ByteArray, secretKey: ByteArray): ByteArray {
+        require(secretKey.size == ED25519_SECRET_KEY_BYTES) {
+            "Secret key must be $ED25519_SECRET_KEY_BYTES bytes, got ${secretKey.size}"
+        }
+        val signature = ByteArray(Sign.ED25519_BYTES)
+        sodium.cryptoSignDetached(signature, message, message.size.toLong(), secretKey)
+        return signature
+    }
+
+    /**
+     * Verifies an Ed25519 signature with raw byte arrays.
+     *
+     * This is a convenience method that accepts raw byte arrays instead of Key objects,
+     * making it easier to use from modules that don't have direct access to LazySodium types.
+     *
+     * @param message The original message
+     * @param signature The 64-byte signature to verify
+     * @param publicKey The 32-byte public key to verify against
+     * @return true if the signature is valid, false otherwise
+     */
+    fun verifyRaw(message: ByteArray, signature: ByteArray, publicKey: ByteArray): Boolean {
+        if (publicKey.size != ED25519_PUBLIC_KEY_BYTES) {
+            return false
+        }
+        if (signature.size != ED25519_SIGNATURE_BYTES) {
+            return false
+        }
+        return sodium.cryptoSignVerifyDetached(signature, message, message.size, publicKey)
+    }
+
+    /**
      * Computes the SHA-256 hash of the given data.
      *
      * @param data The data to hash
@@ -170,6 +211,19 @@ class CryptoProvider {
      */
     fun randomBytes(size: Int): ByteArray {
         return sodium.randomBytesBuf(size)
+    }
+
+    /**
+     * Generates a new Ed25519 key pair and returns raw byte arrays.
+     *
+     * This is a convenience method that returns raw byte arrays instead of KeyPair objects,
+     * making it easier to use from modules that don't have direct access to LazySodium types.
+     *
+     * @return A pair of (publicKey, secretKey) as raw byte arrays
+     */
+    fun generateSigningKeyPairRaw(): Pair<ByteArray, ByteArray> {
+        val keyPair = sodium.cryptoSignKeypair()
+        return Pair(keyPair.publicKey.asBytes.copyOf(), keyPair.secretKey.asBytes.copyOf())
     }
 
     companion object {
